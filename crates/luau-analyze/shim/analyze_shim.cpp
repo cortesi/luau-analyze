@@ -34,6 +34,8 @@ struct LuauCheckResult
     void* _internal;
     const LuauDiagnostic* diagnostics;
     uint32_t diagnostic_count;
+    uint32_t timed_out;
+    uint32_t cancelled;
 };
 
 struct LuauString
@@ -43,13 +45,40 @@ struct LuauString
     uint32_t len;
 };
 
+typedef struct LuauCancellationToken LuauCancellationToken;
+
+struct LuauCheckOptions
+{
+    const char* module_name;
+    uint32_t module_name_len;
+    uint32_t has_timeout;
+    double timeout_seconds;
+    LuauCancellationToken* cancellation_token;
+};
+
 typedef struct LuauChecker LuauChecker;
 
 LuauChecker* luau_checker_new(void);
 void luau_checker_free(LuauChecker* checker);
 
-LuauString luau_checker_add_definitions(LuauChecker* checker, const char* defs, uint32_t defs_len);
-LuauCheckResult luau_checker_check(LuauChecker* checker, const char* source, uint32_t source_len);
+LuauCancellationToken* luau_cancellation_token_new(void);
+void luau_cancellation_token_free(LuauCancellationToken* token);
+void luau_cancellation_token_cancel(LuauCancellationToken* token);
+void luau_cancellation_token_reset(LuauCancellationToken* token);
+
+LuauString luau_checker_add_definitions(
+    LuauChecker* checker,
+    const char* defs,
+    uint32_t defs_len,
+    const char* module_name,
+    uint32_t module_name_len
+);
+LuauCheckResult luau_checker_check(
+    LuauChecker* checker,
+    const char* source,
+    uint32_t source_len,
+    const LuauCheckOptions* options
+);
 
 void luau_check_result_free(LuauCheckResult result);
 void luau_string_free(LuauString value);
@@ -120,6 +149,8 @@ struct CheckResultStorage
 {
     std::vector<DiagnosticEntry> entries;
     std::vector<LuauDiagnostic> diagnostics;
+    bool timedOut = false;
+    bool cancelled = false;
 };
 
 struct StringStorage
@@ -139,6 +170,7 @@ struct CheckerImpl
         frontendOptions.retainFullTypeGraphs = false;
         frontendOptions.runLintChecks = true;
         frontend = std::make_unique<Luau::Frontend>(&fileResolver, &configResolver, frontendOptions);
+        frontend->setLuauSolverMode(Luau::SolverMode::New);
 
         Luau::unfreeze(frontend->globals.globalTypes);
         Luau::registerBuiltinGlobals(*frontend, frontend->globals);
@@ -151,6 +183,11 @@ struct CheckerImpl
 struct LuauChecker
 {
     CheckerImpl* impl;
+};
+
+struct LuauCancellationToken
+{
+    std::shared_ptr<Luau::FrontendCancellationToken> token;
 };
 
 namespace
@@ -216,7 +253,19 @@ void push_internal_error(CheckResultStorage& storage, const std::string& message
     push_diagnostic(storage, 0, 0, 0, 0, 0, message);
 }
 
-std::string definitions_error_message(const Luau::LoadDefinitionFileResult& result)
+std::string to_owned_string(const char* data, uint32_t len)
+{
+    if (data == nullptr || len == 0)
+        return {};
+    return std::string(data, len);
+}
+
+std::string fallback_label(const std::string& value, const char* fallback)
+{
+    return value.empty() ? std::string(fallback) : value;
+}
+
+std::string definitions_error_message(const Luau::LoadDefinitionFileResult& result, const std::string& moduleName)
 {
     std::string message;
 
@@ -224,6 +273,8 @@ std::string definitions_error_message(const Luau::LoadDefinitionFileResult& resu
     {
         if (!message.empty())
             message += "\n";
+        message += moduleName;
+        message += ":";
         message += std::to_string(parseError.getLocation().begin.line + 1);
         message += ":";
         message += std::to_string(parseError.getLocation().begin.column + 1);
@@ -237,6 +288,8 @@ std::string definitions_error_message(const Luau::LoadDefinitionFileResult& resu
         {
             if (!message.empty())
                 message += "\n";
+            message += moduleName;
+            message += ":";
             message += std::to_string(error.location.begin.line + 1);
             message += ":";
             message += std::to_string(error.location.begin.column + 1);
@@ -275,7 +328,13 @@ LuauCheckResult finalize_check_result(CheckResultStorage* storage)
         storage->diagnostics.push_back(entry.diagnostic);
     }
 
-    return LuauCheckResult{storage, storage->diagnostics.data(), as_u32(storage->diagnostics.size())};
+    return LuauCheckResult{
+        storage,
+        storage->diagnostics.data(),
+        as_u32(storage->diagnostics.size()),
+        storage->timedOut ? 1u : 0u,
+        storage->cancelled ? 1u : 0u,
+    };
 }
 
 } // namespace
@@ -302,7 +361,47 @@ extern "C" void luau_checker_free(LuauChecker* checker)
     delete checker;
 }
 
-extern "C" LuauString luau_checker_add_definitions(LuauChecker* checker, const char* defs, uint32_t defs_len)
+extern "C" LuauCancellationToken* luau_cancellation_token_new(void)
+{
+    try
+    {
+        auto* token = new LuauCancellationToken();
+        token->token = std::make_shared<Luau::FrontendCancellationToken>();
+        token->token->cancelled.store(false);
+        return token;
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+}
+
+extern "C" void luau_cancellation_token_free(LuauCancellationToken* token)
+{
+    delete token;
+}
+
+extern "C" void luau_cancellation_token_cancel(LuauCancellationToken* token)
+{
+    if (token == nullptr || !token->token)
+        return;
+    token->token->cancel();
+}
+
+extern "C" void luau_cancellation_token_reset(LuauCancellationToken* token)
+{
+    if (token == nullptr || !token->token)
+        return;
+    token->token->cancelled.store(false);
+}
+
+extern "C" LuauString luau_checker_add_definitions(
+    LuauChecker* checker,
+    const char* defs,
+    uint32_t defs_len,
+    const char* module_name,
+    uint32_t module_name_len
+)
 {
     if (checker == nullptr)
         return make_luau_string("checker is null");
@@ -312,13 +411,14 @@ extern "C" LuauString luau_checker_add_definitions(LuauChecker* checker, const c
     try
     {
         const std::string source = defs == nullptr ? std::string() : std::string(defs, defs_len);
+        const std::string moduleName = fallback_label(to_owned_string(module_name, module_name_len), "@definitions");
 
         Luau::unfreeze(checker->impl->frontend->globals.globalTypes);
         Luau::LoadDefinitionFileResult result = checker->impl->frontend->loadDefinitionFile(
             checker->impl->frontend->globals,
             checker->impl->frontend->globals.globalScope,
             source,
-            "@definitions",
+            moduleName,
             false,
             false
         );
@@ -326,7 +426,7 @@ extern "C" LuauString luau_checker_add_definitions(LuauChecker* checker, const c
 
         if (result.success)
             return LuauString{nullptr, nullptr, 0};
-        return make_luau_string(definitions_error_message(result));
+        return make_luau_string(definitions_error_message(result, moduleName));
     }
     catch (const std::exception& error)
     {
@@ -338,7 +438,12 @@ extern "C" LuauString luau_checker_add_definitions(LuauChecker* checker, const c
     }
 }
 
-extern "C" LuauCheckResult luau_checker_check(LuauChecker* checker, const char* source, uint32_t source_len)
+extern "C" LuauCheckResult luau_checker_check(
+    LuauChecker* checker,
+    const char* source,
+    uint32_t source_len,
+    const LuauCheckOptions* options
+)
 {
     auto* storage = new CheckResultStorage();
 
@@ -355,17 +460,46 @@ extern "C" LuauCheckResult luau_checker_check(LuauChecker* checker, const char* 
 
     try
     {
+        std::string moduleName = "main";
+        Luau::FrontendOptions frontendOptions = checker->impl->frontendOptions;
+
+        if (options != nullptr)
+        {
+            moduleName = fallback_label(to_owned_string(options->module_name, options->module_name_len), "main");
+            if (options->has_timeout != 0 && options->timeout_seconds >= 0.0)
+                frontendOptions.moduleTimeLimitSec = options->timeout_seconds;
+            if (options->cancellation_token != nullptr)
+                frontendOptions.cancellationToken = options->cancellation_token->token;
+        }
+
         checker->impl->frontend->clear();
         checker->impl->fileResolver.sources.clear();
-        checker->impl->fileResolver.sources["main"] = source == nullptr ? std::string() : std::string(source, source_len);
+        checker->impl->fileResolver.sources[moduleName] = source == nullptr ? std::string() : std::string(source, source_len);
 
-        Luau::CheckResult checkResult = checker->impl->frontend->check("main");
+        Luau::CheckResult checkResult = checker->impl->frontend->check(moduleName, frontendOptions);
         for (const auto& error : checkResult.errors)
             push_type_error(*storage, error);
         for (const auto& error : checkResult.lintResult.errors)
             push_lint(*storage, error, 0);
         for (const auto& warning : checkResult.lintResult.warnings)
             push_lint(*storage, warning, 1);
+
+        for (const auto& timeoutHit : checkResult.timeoutHits)
+        {
+            storage->timedOut = true;
+            push_internal_error(*storage, "type checking timed out for module `" + timeoutHit + "`");
+        }
+
+        if (options != nullptr && options->cancellation_token != nullptr && options->cancellation_token->token &&
+            options->cancellation_token->token->requested() && checkResult.errors.empty() &&
+            checkResult.lintResult.errors.empty() && checkResult.lintResult.warnings.empty())
+        {
+            storage->cancelled = true;
+            push_internal_error(*storage, "analysis has been cancelled");
+        }
+        else if (options != nullptr && options->cancellation_token != nullptr && options->cancellation_token->token &&
+            options->cancellation_token->token->requested())
+            storage->cancelled = true;
     }
     catch (const std::exception& error)
     {

@@ -9,3 +9,4 @@ workspace = true
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+luau-analyze = { path = "../crates/luau-analyze" }

@@ -5,9 +5,10 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
-    use luau_analyze::{Checker, Severity};
+    use luau_analyze::{CancellationToken, CheckOptions, Checker, Severity};
 
     /// Expected result marker parsed from script header comments.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,27 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.severity == Severity::Error)
         );
+        assert!(!result.timed_out());
+        assert!(!result.cancelled());
+    }
+
+    /// Verifies strict mode is enforced even without `--!strict`.
+    #[test]
+    fn strict_mode_is_enforced_without_hot_comment() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let result = checker.check(
+            r#"
+            local x: number = "hello"
+            "#,
+        );
+
+        assert!(!result.is_ok(), "strict type mismatch should be reported");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == Severity::Error)
+        );
     }
 
     /// Verifies invalid definitions return an actionable error.
@@ -50,6 +72,43 @@ mod tests {
         let message = error.to_string();
         assert!(!message.trim().is_empty());
         assert!(message.contains("failed to load Luau definitions"));
+    }
+
+    /// Verifies custom definition labels are preserved in error messages.
+    #[test]
+    fn invalid_definitions_include_custom_label() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let invalid_defs = read_example("definitions/invalid_api.d.luau");
+        let error = checker
+            .add_definitions_with_name(&invalid_defs, "defs/invalid_api.d.luau")
+            .expect_err("invalid definitions should fail");
+
+        assert!(error.to_string().contains("defs/invalid_api.d.luau"));
+    }
+
+    /// Verifies multiple definitions with distinct labels stay active.
+    #[test]
+    fn multiple_definition_labels_keep_all_types_available() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        checker
+            .add_definitions_with_name("declare function alpha_id(): string", "defs/alpha.d.luau")
+            .expect("alpha definitions should load");
+        checker
+            .add_definitions_with_name("declare function beta_count(): number", "defs/beta.d.luau")
+            .expect("beta definitions should load");
+
+        let result = checker.check(
+            r#"
+            --!strict
+            local id: string = alpha_id()
+            local count: number = beta_count()
+            "#,
+        );
+
+        assert!(
+            result.is_ok(),
+            "both definition files should remain active: {result:#?}"
+        );
     }
 
     /// Verifies host definitions affect check outcomes.
@@ -137,6 +196,73 @@ mod tests {
         );
     }
 
+    /// Verifies timeout state and labels are surfaced for zero-timeout checks.
+    #[test]
+    fn timeout_marks_result_and_uses_module_label() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let result = checker.check_with_options(
+            "--!strict\nlocal x = 1\n",
+            CheckOptions {
+                timeout: Some(Duration::ZERO),
+                module_name: Some("custom/module_timeout.luau"),
+                cancellation_token: None,
+            },
+        );
+
+        assert!(result.timed_out(), "expected timeout marker");
+        assert!(!result.is_ok(), "timeout should fail check");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("custom/module_timeout.luau"))
+        );
+    }
+
+    /// Verifies cancellation state is surfaced through check results.
+    #[test]
+    fn cancellation_marks_result() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let token = CancellationToken::new().expect("token should be created");
+        token.cancel();
+
+        let result = checker.check_with_options(
+            "--!strict\nlocal x = 1\n",
+            CheckOptions {
+                timeout: None,
+                module_name: Some("cancelled.luau"),
+                cancellation_token: Some(&token),
+            },
+        );
+
+        assert!(result.cancelled(), "expected cancelled marker");
+        assert!(!result.is_ok(), "cancelled check should fail");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cancelled"))
+        );
+    }
+
+    /// Verifies cross-file `require` is currently unsupported in checker mode.
+    #[test]
+    fn single_file_require_is_not_supported() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let result = checker.check(
+            r#"
+            --!strict
+            local dep = require("./other_module")
+            local _: number = dep.value
+            "#,
+        );
+
+        assert!(
+            !result.is_ok(),
+            "expected unresolved module diagnostic for single-file checker"
+        );
+    }
+
     /// Verifies diagnostics are deterministically sorted.
     #[test]
     fn diagnostics_are_sorted() {
@@ -166,12 +292,8 @@ mod tests {
     fn bundled_examples_match_expectations() {
         let mut checker = checker_with_demo_definitions();
         let scripts_dir = examples_root().join("scripts");
-        let mut scripts = fs::read_dir(&scripts_dir)
-            .expect("scripts directory should exist")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "luau"))
-            .collect::<Vec<_>>();
+        let mut scripts = collect_scripts_recursive(&scripts_dir)
+            .expect("scripts should be collected recursively");
         scripts.sort();
 
         let mut mismatches = Vec::new();
@@ -245,5 +367,28 @@ mod tests {
             }
         }
         Expectation::Pass
+    }
+
+    /// Recursively collects all `.luau` scripts under `root`.
+    fn collect_scripts_recursive(root: &Path) -> Result<Vec<PathBuf>, String> {
+        let mut scripts = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).map_err(|error| {
+                format!("failed to read scripts dir `{}`: {error}", dir.display())
+            })? {
+                let entry =
+                    entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "luau") {
+                    scripts.push(path);
+                }
+            }
+        }
+
+        Ok(scripts)
     }
 }

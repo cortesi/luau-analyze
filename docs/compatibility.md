@@ -14,6 +14,9 @@ Windows is currently out of scope.
 - Luau is vendored as a submodule and pinned per release line.
 - `v0.1` targets Luau tag `0.710`.
 - Any Luau bump requires rerunning the update playbook and full test matrix.
+- Solver policy is fixed to `SolverMode::New` at checker construction.
+- Verification note (2026-03-05): upstream Luau releases currently include
+  semantic tags through `0.710`, matching the pinned tag.
 
 ## API Stability Policy
 
@@ -25,6 +28,22 @@ Windows is currently out of scope.
   - `Diagnostic`
   - `Severity`
   - `Error`
+
+## Checker Policy Guarantees
+
+- Strict mode is always enabled by the shim config resolver.
+- Batch queue APIs (`queueModuleCheck` and friends) are intentionally not
+  exposed by the Rust API.
+- Realtime controls are limited to timeout and cancellation token options.
+- `Checker` is `Send` but not `Sync`; reuse requires `&mut self` and preserves
+  loaded definitions across checks.
+
+## Current Functional Limits
+
+- Realtime checks are single-file and immediate. Cross-file `require` resolution
+  is a known limitation until multi-file support is intentionally added.
+- Definition files can be loaded multiple times and are merged into the checker
+  globals; errors include the caller-provided definition label.
 
 ## Crate Versioning Policy
 

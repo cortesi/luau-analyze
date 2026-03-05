@@ -30,5 +30,46 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Run Demo
-        run: cargo run -p lan -- demo
+      - name: Verify Strict Policy
+        run: |
+          cargo run -p lan -- check --print-policy --json > policy.json
+          python3 - <<'PY'
+          import json
+          with open("policy.json", "r", encoding="utf-8") as handle:
+              policy = json.load(handle)
+          assert policy["strict_mode"] is True
+          assert policy["solver"] == "new"
+          assert policy["exposes_batch_queue"] is False
+          PY
+
+      - name: Run Smoke
+        run: cargo run -p xtask -- smoke
+
+      - name: Latency Benchmark
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/bench-latency.sh
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+      CFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+      CXXFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+      RUSTFLAGS: -C link-arg=-fsanitize=address -C link-arg=-fsanitize=undefined -C link-arg=-fno-omit-frame-pointer
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build + Test (Sanitizers)
+        run: cargo test -p luau-analyze --tests

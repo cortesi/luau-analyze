@@ -3,6 +3,7 @@
 use std::ffi::c_void;
 
 /// C ABI diagnostic structure emitted by the shim.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct LuauDiagnostic {
     /// Zero-based starting line.
@@ -22,6 +23,7 @@ pub struct LuauDiagnostic {
 }
 
 /// C ABI result object containing diagnostic storage.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct LuauCheckResult {
     /// Internal opaque pointer owned by C.
@@ -30,9 +32,14 @@ pub struct LuauCheckResult {
     pub(crate) diagnostics: *const LuauDiagnostic,
     /// Number of diagnostics in `diagnostics`.
     pub(crate) diagnostic_count: u32,
+    /// Whether the check hit one or more time limits.
+    pub(crate) timed_out: u32,
+    /// Whether cancellation was requested during checking.
+    pub(crate) cancelled: u32,
 }
 
 /// C ABI string result used for definition-load failures.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct LuauString {
     /// Internal opaque pointer owned by C.
@@ -43,25 +50,55 @@ pub struct LuauString {
     pub(crate) len: u32,
 }
 
+/// C ABI check options passed into a single checker invocation.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct LuauCheckOptions {
+    /// Optional module name label used for diagnostics.
+    pub(crate) module_name: *const u8,
+    /// Length of `module_name`.
+    pub(crate) module_name_len: u32,
+    /// Whether timeout is set (`0` or `1`).
+    pub(crate) has_timeout: u32,
+    /// Timeout in seconds when `has_timeout` is non-zero.
+    pub(crate) timeout_seconds: f64,
+    /// Optional cancellation token pointer.
+    pub(crate) cancellation_token: *mut LuauCancellationToken,
+}
+
 /// Opaque C checker handle.
 pub enum LuauChecker {}
+/// Opaque C cancellation token handle.
+pub enum LuauCancellationToken {}
 
 unsafe extern "C" {
     /// Creates a new checker instance.
     pub(crate) fn luau_checker_new() -> *mut LuauChecker;
     /// Frees a checker instance.
     pub(crate) fn luau_checker_free(checker: *mut LuauChecker);
+    /// Creates a cancellation token.
+    pub(crate) fn luau_cancellation_token_new() -> *mut LuauCancellationToken;
+    /// Frees a cancellation token.
+    pub(crate) fn luau_cancellation_token_free(token: *mut LuauCancellationToken);
+    /// Marks a cancellation token as cancelled.
+    pub(crate) fn luau_cancellation_token_cancel(token: *mut LuauCancellationToken);
+    /// Clears cancellation state on a token.
+    pub(crate) fn luau_cancellation_token_reset(token: *mut LuauCancellationToken);
+
     /// Loads definition source into the checker.
     pub(crate) fn luau_checker_add_definitions(
         checker: *mut LuauChecker,
         defs: *const u8,
         defs_len: u32,
+        module_name: *const u8,
+        module_name_len: u32,
     ) -> LuauString;
     /// Type-checks a source module.
     pub(crate) fn luau_checker_check(
         checker: *mut LuauChecker,
         source: *const u8,
         source_len: u32,
+        options: *const LuauCheckOptions,
     ) -> LuauCheckResult;
     /// Frees a check result.
     pub(crate) fn luau_check_result_free(result: LuauCheckResult);

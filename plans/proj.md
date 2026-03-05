@@ -241,3 +241,23 @@ Exit checks:
 - Phase 3: completed
 - Phase 4: completed
 - Phase 5: completed
+
+## Realtime Follow-up Status (2026-03-05)
+
+- Strict realtime policy is now hard-enforced (`solver=new`, strict-only,
+  queue-free) in shim, API, CLI, and CI assertions.
+- Realtime controls are wired end-to-end:
+  - timeout
+  - cancellation token
+  - per-call module labels
+  - labeled definitions loading
+- Outcome coverage is expanded with explicit timeout/cancellation flags and
+  CLI JSON integration tests.
+- Example corpus now includes nested realtime/strict/module-limit scripts plus
+  additional definition fixtures.
+- Baseline latency measurement from `scripts/bench-latency.sh`:
+  - `examples/scripts/01_ok_builder.luau`: avg `12.29ms`, p95 `23.26ms`
+  - `examples/scripts/realtime/08_timeout_sensitive_types_ok.luau`: avg
+    `9.46ms`, p95 `9.99ms`
+  - `examples/scripts/strict/11_generic_result_ok.luau`: avg `9.29ms`,
+    p95 `9.39ms`
