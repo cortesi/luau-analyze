@@ -1,0 +1,34 @@
+[workspace]
+members = ["crates/*", "xtask"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+absolute_paths = "warn"
+branches_sharing_code = "warn"
+cfg_not_test = "warn"
+cognitive_complexity = "warn"
+comparison_chain = "warn"
+excessive_nesting = "warn"
+ignore_without_reason = "warn"
+items_after_statements = "warn"
+let_underscore_must_use = "warn"
+many_single_char_names = "warn"
+missing_docs_in_private_items = "warn"
+multiple_inherent_impl = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+redundant_pub_crate = "warn"
+self_named_module_files = "warn"
+tests_outside_test_module = "warn"
+too_many_lines = "warn"
+use_self = "warn"
+wildcard_dependencies = "warn"
