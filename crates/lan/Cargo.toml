@@ -1,0 +1,13 @@
+[package]
+name = "lan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI demo for the luau-analyze crate"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+luau-analyze = { path = "../luau-analyze" }

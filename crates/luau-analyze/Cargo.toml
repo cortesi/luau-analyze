@@ -3,8 +3,14 @@ name = "luau-analyze"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "In-process Luau type checker for Rust"
+links = "luau_analyze"
+repository = "https://github.com/cortesi/luau-analyze"
 
 [lints]
 workspace = true
 
 [dependencies]
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }

@@ -232,3 +232,12 @@ Exit checks:
 2. At Phase 1 kickoff, record the exact Luau tag selected by the pinning policy.
 3. After Phase 0, update this plan with measured outcomes and any phase
    adjustments.
+
+## Current Status (2026-03-05)
+
+- Phase 0: completed
+- Phase 1: completed (Luau submodule pinned to `0.710`)
+- Phase 2: completed
+- Phase 3: completed
+- Phase 4: completed
+- Phase 5: completed
