@@ -4,8 +4,37 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "In-process Luau type checker for Rust"
+readme = "../../README.md"
+documentation = "https://docs.rs/luau-analyze"
+repository.workspace = true
+keywords = ["luau", "roblox", "typechecker", "analyzer"]
+categories = ["development-tools::programming-language-tooling", "parser-implementations"]
+rust-version.workspace = true
 links = "luau_analyze"
-repository = "https://github.com/cortesi/luau-analyze"
+include = [
+    "/Cargo.toml",
+    "/LICENSE",
+    "/build.rs",
+    "/src/**/*.rs",
+    "/tests/**/*.rs",
+    "/tests/examples/**/*",
+    "/shim/**/*.cpp",
+    "/luau/LICENSE.txt",
+    "/luau/lua_LICENSE.txt",
+    "/luau/Sources.cmake",
+    "/luau/Common/include/**/*",
+    "/luau/Common/src/**/*",
+    "/luau/Ast/include/**/*",
+    "/luau/Ast/src/**/*",
+    "/luau/VM/include/**/*",
+    "/luau/VM/src/**/*",
+    "/luau/Compiler/include/**/*",
+    "/luau/Compiler/src/**/*",
+    "/luau/Config/include/**/*",
+    "/luau/Config/src/**/*",
+    "/luau/Analysis/include/**/*",
+    "/luau/Analysis/src/**/*",
+]
 
 [lints]
 workspace = true

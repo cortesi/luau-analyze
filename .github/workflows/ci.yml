@@ -49,6 +49,49 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/bench-latency.sh
 
+  release-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Document
+        run: cargo doc -p luau-analyze --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+      - name: Package Crate
+        run: |
+          rm -rf target/package/luau-analyze-*
+          cargo package -p luau-analyze
+
+      - name: Package Contents List
+        run: |
+          cargo package --list -p luau-analyze | tee /tmp/luau-analyze-package.txt
+          grep -Fx 'LICENSE' /tmp/luau-analyze-package.txt
+
+      - name: Test Packaged Tarball
+        run: |
+          crate_path="$(find target/package -maxdepth 1 -name 'luau-analyze-*.crate' -print -quit)"
+          test -n "$crate_path"
+          unpack_dir="$RUNNER_TEMP/luau-analyze-package"
+          rm -rf "$unpack_dir"
+          mkdir -p "$unpack_dir"
+          tar -xzf "$crate_path" -C "$unpack_dir"
+          package_dir="$(find "$unpack_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$package_dir"
+          cargo test --manifest-path "$package_dir/Cargo.toml" --tests --locked
+
+      - name: Dry Run Publish
+        run: cargo publish --dry-run -p luau-analyze
   sanitizers:
     runs-on: ubuntu-latest
     env:

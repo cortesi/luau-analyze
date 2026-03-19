@@ -23,12 +23,14 @@ mod tests {
     #[test]
     fn strict_type_mismatch_reports_error() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check(
-            r#"
+        let result = checker
+            .check(
+                r#"
             --!strict
             local x: number = "hello"
             "#,
-        );
+            )
+            .unwrap();
 
         assert!(!result.is_ok(), "expected strict type mismatch");
         assert!(
@@ -45,11 +47,13 @@ mod tests {
     #[test]
     fn strict_mode_is_enforced_without_hot_comment() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check(
-            r#"
+        let result = checker
+            .check(
+                r#"
             local x: number = "hello"
             "#,
-        );
+            )
+            .unwrap();
 
         assert!(!result.is_ok(), "strict type mismatch should be reported");
         assert!(
@@ -97,13 +101,15 @@ mod tests {
             .add_definitions_with_name("declare function beta_count(): number", "defs/beta.d.luau")
             .expect("beta definitions should load");
 
-        let result = checker.check(
-            r#"
+        let result = checker
+            .check(
+                r#"
             --!strict
             local id: string = alpha_id()
             local count: number = beta_count()
             "#,
-        );
+            )
+            .unwrap();
 
         assert!(
             result.is_ok(),
@@ -116,24 +122,28 @@ mod tests {
     fn definitions_change_check_behavior() {
         let mut checker = checker_with_demo_definitions();
 
-        let ok_result = checker.check(
-            r#"
+        let ok_result = checker
+            .check(
+                r#"
             --!strict
             local todo = Todo.create():content("Review"):due("today"):save()
             todo:complete()
             "#,
-        );
+            )
+            .unwrap();
         assert!(
             ok_result.is_ok(),
             "expected script to pass with valid API usage: {ok_result:#?}"
         );
 
-        let bad_result = checker.check(
-            r#"
+        let bad_result = checker
+            .check(
+                r#"
             --!strict
             local todo = Todo.create():content("Review"):due(42):save()
             "#,
-        );
+            )
+            .unwrap();
         assert!(!bad_result.is_ok(), "expected type error for due(42)");
     }
 
@@ -142,29 +152,35 @@ mod tests {
     fn checker_reuse_keeps_definitions() {
         let mut checker = checker_with_demo_definitions();
 
-        let first = checker.check(
-            r#"
+        let first = checker
+            .check(
+                r#"
             --!strict
             local _todo = Todo.create():content("one"):save()
             "#,
-        );
+            )
+            .unwrap();
         assert!(first.is_ok(), "first check should succeed");
 
-        let second = checker.check(
-            r#"
+        let second = checker
+            .check(
+                r#"
             --!strict
             local _todo = Todo.create():content("two"):due(123):save()
             "#,
-        );
+            )
+            .unwrap();
         assert!(!second.is_ok(), "second check should fail");
 
-        let third = checker.check(
-            r#"
+        let third = checker
+            .check(
+                r#"
             --!strict
             local id = make_id("todo")
             local _: string = id
             "#,
-        );
+            )
+            .unwrap();
         assert!(third.is_ok(), "third check should still succeed");
     }
 
@@ -172,7 +188,7 @@ mod tests {
     #[test]
     fn empty_script_is_ok() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check("");
+        let result = checker.check("").unwrap();
         assert!(result.is_ok(), "empty script should not produce errors");
     }
 
@@ -180,12 +196,14 @@ mod tests {
     #[test]
     fn syntax_error_is_reported() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check(
-            r#"
+        let result = checker
+            .check(
+                r#"
             --!strict
             local value: number =
             "#,
-        );
+            )
+            .unwrap();
 
         assert!(!result.is_ok(), "expected syntax error");
         assert!(
@@ -200,14 +218,16 @@ mod tests {
     #[test]
     fn timeout_marks_result_and_uses_module_label() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check_with_options(
-            "--!strict\nlocal x = 1\n",
-            CheckOptions {
-                timeout: Some(Duration::ZERO),
-                module_name: Some("custom/module_timeout.luau"),
-                cancellation_token: None,
-            },
-        );
+        let result = checker
+            .check_with_options(
+                "--!strict\nlocal x = 1\n",
+                CheckOptions {
+                    timeout: Some(Duration::ZERO),
+                    module_name: Some("custom/module_timeout.luau"),
+                    cancellation_token: None,
+                },
+            )
+            .unwrap();
 
         assert!(result.timed_out(), "expected timeout marker");
         assert!(!result.is_ok(), "timeout should fail check");
@@ -226,14 +246,16 @@ mod tests {
         let token = CancellationToken::new().expect("token should be created");
         token.cancel();
 
-        let result = checker.check_with_options(
-            "--!strict\nlocal x = 1\n",
-            CheckOptions {
-                timeout: None,
-                module_name: Some("cancelled.luau"),
-                cancellation_token: Some(&token),
-            },
-        );
+        let result = checker
+            .check_with_options(
+                "--!strict\nlocal x = 1\n",
+                CheckOptions {
+                    timeout: None,
+                    module_name: Some("cancelled.luau"),
+                    cancellation_token: Some(&token),
+                },
+            )
+            .unwrap();
 
         assert!(result.cancelled(), "expected cancelled marker");
         assert!(!result.is_ok(), "cancelled check should fail");
@@ -249,13 +271,15 @@ mod tests {
     #[test]
     fn single_file_require_is_not_supported() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check(
-            r#"
+        let result = checker
+            .check(
+                r#"
             --!strict
             local dep = require("./other_module")
             local _: number = dep.value
             "#,
-        );
+            )
+            .unwrap();
 
         assert!(
             !result.is_ok(),
@@ -267,13 +291,15 @@ mod tests {
     #[test]
     fn diagnostics_are_sorted() {
         let mut checker = Checker::new().expect("checker creation should succeed");
-        let result = checker.check(
-            r#"
+        let result = checker
+            .check(
+                r#"
             --!strict
             local a: number = "x"
             local b: number = "y"
             "#,
-        );
+            )
+            .unwrap();
 
         for pair in result.diagnostics.windows(2) {
             let left = &pair[0];
@@ -300,7 +326,7 @@ mod tests {
         for script in scripts {
             let source = fs::read_to_string(&script).expect("example script should be readable");
             let expected = parse_expectation(&source);
-            let result = checker.check(&source);
+            let result = checker.check(&source).unwrap();
             let actual = if result.is_ok() {
                 Expectation::Pass
             } else {
@@ -323,6 +349,56 @@ mod tests {
         );
     }
 
+    /// Verifies packaged fixtures stay in sync with the workspace examples.
+    #[test]
+    fn bundled_examples_match_workspace_examples() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        if !workspace_root.exists() {
+            return;
+        }
+
+        let bundled_root = examples_root();
+        let mut bundled_files = collect_scripts_recursive(&bundled_root)
+            .expect("bundled examples should be collected recursively")
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&bundled_root)
+                    .expect("bundled file should stay under bundled root")
+                    .to_path_buf()
+            })
+            .collect::<Vec<_>>();
+        let mut workspace_files = collect_scripts_recursive(&workspace_root)
+            .expect("workspace examples should be collected recursively")
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&workspace_root)
+                    .expect("workspace file should stay under workspace root")
+                    .to_path_buf()
+            })
+            .collect::<Vec<_>>();
+
+        bundled_files.sort();
+        workspace_files.sort();
+
+        assert_eq!(
+            bundled_files, workspace_files,
+            "bundled fixtures drifted from workspace examples"
+        );
+
+        for relative_path in bundled_files {
+            let bundled = fs::read_to_string(bundled_root.join(&relative_path))
+                .expect("bundled example should be readable");
+            let workspace = fs::read_to_string(workspace_root.join(&relative_path))
+                .expect("workspace example should be readable");
+            assert_eq!(
+                bundled,
+                workspace,
+                "bundled fixture `{}` drifted from workspace example",
+                relative_path.display()
+            );
+        }
+    }
+
     /// Creates a checker preloaded with demo API definitions.
     fn checker_with_demo_definitions() -> Checker {
         let mut checker = Checker::new().expect("checker creation should succeed");
@@ -333,7 +409,7 @@ mod tests {
         checker
     }
 
-    /// Reads one file under the repository-level `examples/` directory.
+    /// Reads one file under the crate-bundled examples fixture directory.
     fn read_example(relative_path: &str) -> String {
         let path = examples_root().join(relative_path);
         fs::read_to_string(&path).unwrap_or_else(|error| {
@@ -341,12 +417,15 @@ mod tests {
         })
     }
 
-    /// Returns the repository-level `examples/` root.
+    /// Returns the crate-bundled examples fixture root.
     fn examples_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples")
-            .canonicalize()
-            .expect("examples root should exist")
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/examples");
+        assert!(
+            root.exists(),
+            "examples root should exist at `{}`",
+            root.display()
+        );
+        root
     }
 
     /// Parses the script expectation marker from leading comments.

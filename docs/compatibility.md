@@ -7,7 +7,7 @@ Current target platforms:
 - macOS (clang)
 - Linux (gcc/clang)
 
-Windows is currently out of scope.
+Windows is currently unsupported.
 
 ## Luau Compatibility
 

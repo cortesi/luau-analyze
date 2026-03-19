@@ -54,7 +54,14 @@ cargo run -p xtask -- smoke
 - Ensure diagnostics, timeout/cancellation outcomes, and definition-loading
   tests still pass.
 
-6. Commit:
+6. Verify the published crate contents:
+- Any new Luau subdirectories needed by `build.rs` must be explicitly added to the `include` array in `crates/luau-analyze/Cargo.toml`.
+- Keep the crate's own `LICENSE` file and test fixtures under `crates/luau-analyze` so the packaged tarball is self-contained.
+- Run `cargo package --list -p luau-analyze` to confirm the crate contents are minimal and accurate.
+- Run `cargo package -p luau-analyze`, unpack `target/package/luau-analyze-*.crate`, and run `cargo test --manifest-path <unpacked>/Cargo.toml --tests --locked`.
+- Run `cargo publish --dry-run -p luau-analyze` to verify the packaged crate still builds successfully.
+
+7. Commit:
 - Submodule pointer update
 - Any required `build.rs` or shim API fixes
 - Test/docs adjustments

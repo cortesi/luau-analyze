@@ -148,14 +148,16 @@ fn run_check(args: &CheckArgs) -> Result<ExitCode, String> {
         None
     };
 
-    let result = checker.check_with_options(
-        &source,
-        CheckOptions {
-            timeout: args.timeout_ms.map(Duration::from_millis),
-            module_name: Some(label.as_str()),
-            cancellation_token: cancellation_token.as_ref(),
-        },
-    );
+    let result = checker
+        .check_with_options(
+            &source,
+            CheckOptions {
+                timeout: args.timeout_ms.map(Duration::from_millis),
+                module_name: Some(label.as_str()),
+                cancellation_token: cancellation_token.as_ref(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
 
     if args.json {
         let output = JsonCheckOutput {

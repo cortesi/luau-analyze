@@ -1,6 +1,6 @@
 # Release Checklist
 
-This checklist is for internal consumers adopting a new `luau-analyze` release.
+This checklist is for preparing and publishing a public release of `luau-analyze` to crates.io.
 
 ## Pre-release
 
@@ -10,6 +10,11 @@ This checklist is for internal consumers adopting a new `luau-analyze` release.
 2. Run full validation:
    - `cargo test --workspace`
    - `cargo run -p xtask -- smoke`
+   - `cargo doc -p luau-analyze --no-deps`
+   - `cargo package --list -p luau-analyze`
+   - `cargo package -p luau-analyze`
+   - Unpack `target/package/luau-analyze-*.crate` and run `cargo test --manifest-path <unpacked>/Cargo.toml --tests --locked`
+   - `cargo publish --dry-run -p luau-analyze`
 3. Run latency benchmark gate:
    - `./scripts/bench-latency.sh`
 

@@ -176,8 +176,13 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
             },
         );
 
-        let has_errors = !result.is_ok();
-        let has_warnings = !result.warnings().is_empty();
+        let (result, check_error) = match result {
+            Ok(res) => (Some(res), None),
+            Err(e) => (None, Some(e)),
+        };
+
+        let has_errors = result.as_ref().is_none_or(|r| !r.is_ok());
+        let has_warnings = result.as_ref().is_some_and(|r| !r.warnings().is_empty());
         let passed = match expectation {
             Expectation::Pass => !has_errors && (!args.fail_on_warnings || !has_warnings),
             Expectation::Fail => has_errors,
@@ -190,24 +195,30 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
         };
         println!("{tag} {label}");
 
-        for diagnostic in &result.diagnostics {
-            let severity = match diagnostic.severity {
-                Severity::Error => colors.paint("error", "31"),
-                Severity::Warning => colors.paint("warning", "33"),
-            };
-            println!(
-                "  {severity} {}:{} {}",
-                diagnostic.line + 1,
-                diagnostic.col + 1,
-                diagnostic.message
-            );
+        if let Some(err) = check_error {
+            println!("  {} {}", colors.paint("error", "31"), err);
         }
 
-        if result.timed_out() {
-            println!("  {}", colors.paint("timeout", "31"));
-        }
-        if result.cancelled() {
-            println!("  {}", colors.paint("cancelled", "33"));
+        if let Some(result) = &result {
+            for diagnostic in &result.diagnostics {
+                let severity = match diagnostic.severity {
+                    Severity::Error => colors.paint("error", "31"),
+                    Severity::Warning => colors.paint("warning", "33"),
+                };
+                println!(
+                    "  {severity} {}:{} {}",
+                    diagnostic.line + 1,
+                    diagnostic.col + 1,
+                    diagnostic.message
+                );
+            }
+
+            if result.timed_out() {
+                println!("  {}", colors.paint("timeout", "31"));
+            }
+            if result.cancelled() {
+                println!("  {}", colors.paint("cancelled", "33"));
+            }
         }
 
         if !passed {

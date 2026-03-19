@@ -38,8 +38,7 @@ with host-provided type definitions and structured diagnostics.
 
 1. Luau pinning policy: use the latest stable Luau tag available when
    implementation starts, then freeze that tag for v0.1.0.
-2. Release strategy: target internal/private consumption first, then public
-   crates.io release after 1-2 production integrations.
+2. Release strategy: target public crates.io release with stable diagnostics.
 3. Diagnostics ordering: sort by `(line, col, severity, message)` before
    returning results.
 

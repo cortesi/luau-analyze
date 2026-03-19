@@ -6,6 +6,8 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 version = "0.1.0"
+rust-version = "1.85.0"
+repository = "https://github.com/cortesi/luau-analyze"
 
 [workspace.lints.rust]
 missing_docs = "warn"

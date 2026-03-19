@@ -202,6 +202,9 @@ pub struct CheckOptions<'a> {
 }
 
 /// A reusable cancellation token that can be signaled from another thread.
+///
+/// `CancellationToken` is `Send` and `Sync` because the underlying Luau implementation
+/// uses atomic operations to manage its signaled state safely across thread boundaries.
 #[derive(Clone, Debug)]
 pub struct CancellationToken {
     /// Shared token internals.
@@ -259,6 +262,11 @@ impl CancellationToken {
 }
 
 /// Reusable checker instance with persistent global definitions.
+///
+/// `Checker` is `Send` but not `Sync`. The underlying Luau Analysis structures
+/// are safely movable between threads, but all operations that mutate or read
+/// from the checker require exclusive `&mut self` access, meaning it cannot
+/// be concurrently accessed from multiple threads.
 pub struct Checker {
     /// Opaque pointer to the native checker instance.
     inner: *mut ffi::LuauChecker,
@@ -333,25 +341,22 @@ impl Checker {
     }
 
     /// Type-checks a Luau source module with default options.
-    pub fn check(&mut self, source: &str) -> CheckResult {
+    pub fn check(&mut self, source: &str) -> Result<CheckResult, Error> {
         self.check_with_options(source, CheckOptions::default())
     }
 
     /// Type-checks a Luau source module with explicit per-call options.
-    pub fn check_with_options(&mut self, source: &str, options: CheckOptions<'_>) -> CheckResult {
-        let (source_ptr, source_len) = match ffi_str(source, "source") {
-            Ok(value) => value,
-            Err(error) => return diagnostic_error_result(error.to_string()),
-        };
+    pub fn check_with_options(
+        &mut self,
+        source: &str,
+        options: CheckOptions<'_>,
+    ) -> Result<CheckResult, Error> {
+        let (source_ptr, source_len) = ffi_str(source, "source")?;
 
         let module_name = options
             .module_name
             .unwrap_or(self.options.default_module_name.as_str());
-        let (module_name_ptr, module_name_len) = match ffi_optional_str(module_name, "module name")
-        {
-            Ok(value) => value,
-            Err(error) => return diagnostic_error_result(error.to_string()),
-        };
+        let (module_name_ptr, module_name_len) = ffi_optional_str(module_name, "module name")?;
 
         let timeout = options.timeout.or(self.options.default_timeout);
         let raw_options = ffi::LuauCheckOptions {
@@ -397,11 +402,11 @@ impl Checker {
         };
 
         diagnostics.sort_by(diagnostic_sort_key);
-        CheckResult {
+        Ok(CheckResult {
             diagnostics,
             timed_out: raw.as_ref().timed_out != 0,
             cancelled: raw.as_ref().cancelled != 0,
-        }
+        })
     }
 }
 
@@ -409,12 +414,6 @@ impl Drop for Checker {
     fn drop(&mut self) {
         // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
         unsafe { ffi::luau_checker_free(self.inner) };
-    }
-}
-
-impl Default for Checker {
-    fn default() -> Self {
-        Self::new().expect("checker creation should succeed")
     }
 }
 
@@ -471,22 +470,6 @@ fn string_from_raw(ptr: *const u8, len: u32) -> String {
     // SAFETY: `ptr` points to `len` bytes provided by the shim for this call scope.
     let bytes = unsafe { slice::from_raw_parts(ptr, len as usize) };
     String::from_utf8_lossy(bytes).into_owned()
-}
-
-/// Produces a synthetic error result.
-fn diagnostic_error_result(message: String) -> CheckResult {
-    CheckResult {
-        diagnostics: vec![Diagnostic {
-            line: 0,
-            col: 0,
-            end_line: 0,
-            end_col: 0,
-            severity: Severity::Error,
-            message,
-        }],
-        timed_out: false,
-        cancelled: false,
-    }
 }
 
 /// Sorts diagnostics by location, then severity, then message.
