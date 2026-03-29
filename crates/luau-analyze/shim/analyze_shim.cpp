@@ -5,8 +5,10 @@
 #include "Luau/Error.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Frontend.h"
+#include "Luau/Parser.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -36,6 +38,24 @@ struct LuauCheckResult
     uint32_t diagnostic_count;
     uint32_t timed_out;
     uint32_t cancelled;
+};
+
+struct LuauEntrypointParam
+{
+    const char* name;
+    uint32_t name_len;
+    const char* annotation;
+    uint32_t annotation_len;
+    uint32_t optional;
+};
+
+struct LuauEntrypointSchemaResult
+{
+    void* _internal;
+    const LuauEntrypointParam* params;
+    uint32_t param_count;
+    const char* error;
+    uint32_t error_len;
 };
 
 struct LuauString
@@ -79,8 +99,13 @@ LuauCheckResult luau_checker_check(
     uint32_t source_len,
     const LuauCheckOptions* options
 );
+LuauEntrypointSchemaResult luau_extract_entrypoint_schema(
+    const char* source,
+    uint32_t source_len
+);
 
 void luau_check_result_free(LuauCheckResult result);
+void luau_entrypoint_schema_result_free(LuauEntrypointSchemaResult result);
 void luau_string_free(LuauString value);
 }
 
@@ -158,6 +183,20 @@ struct StringStorage
     std::string value;
 };
 
+struct EntrypointParamStorage
+{
+    LuauEntrypointParam param{};
+    std::string name;
+    std::string annotation;
+};
+
+struct EntrypointSchemaStorage
+{
+    std::vector<EntrypointParamStorage> entries;
+    std::vector<LuauEntrypointParam> params;
+    std::string error;
+};
+
 struct CheckerImpl
 {
     InMemoryFileResolver fileResolver;
@@ -177,6 +216,171 @@ struct CheckerImpl
         Luau::freeze(frontend->globals.globalTypes);
     }
 };
+
+std::vector<size_t> line_starts(const std::string& source)
+{
+    std::vector<size_t> starts;
+    starts.push_back(0);
+    for (size_t index = 0; index < source.size(); ++index)
+    {
+        if (source[index] == '\n')
+            starts.push_back(index + 1);
+    }
+    return starts;
+}
+
+size_t offset_for_position(const std::vector<size_t>& starts, const Luau::Position& position, size_t sourceLen)
+{
+    if (position.line >= starts.size())
+        return sourceLen;
+    return std::min(starts[position.line] + position.column, sourceLen);
+}
+
+std::string source_slice(const std::string& source, const Luau::Location& location)
+{
+    const std::vector<size_t> starts = line_starts(source);
+    const size_t begin = offset_for_position(starts, location.begin, source.size());
+    const size_t end = offset_for_position(starts, location.end, source.size());
+    if (begin >= end || begin >= source.size())
+        return std::string();
+    return source.substr(begin, end - begin);
+}
+
+std::string trim_copy(std::string value)
+{
+    auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    auto begin = std::find_if_not(value.begin(), value.end(), isSpace);
+    auto end = std::find_if_not(value.rbegin(), value.rend(), isSpace).base();
+    if (begin >= end)
+        return std::string();
+    return std::string(begin, end);
+}
+
+bool annotation_is_optional(const std::string& annotation)
+{
+    const std::string trimmed = trim_copy(annotation);
+    return !trimmed.empty() && trimmed.back() == '?';
+}
+
+std::string parse_error_message(const Luau::ParseError& error)
+{
+    std::string message;
+    message += "main:";
+    message += std::to_string(error.getLocation().begin.line + 1);
+    message += ":";
+    message += std::to_string(error.getLocation().begin.column + 1);
+    message += ": ";
+    message += error.getMessage();
+    return message;
+}
+
+EntrypointSchemaStorage* extract_entrypoint_schema_storage(const std::string& source)
+{
+    auto* storage = new EntrypointSchemaStorage();
+
+    try
+    {
+        Luau::Allocator allocator;
+        Luau::AstNameTable names(allocator);
+        Luau::ParseOptions options;
+        options.allowDeclarationSyntax = true;
+
+        Luau::ParseResult parseResult = Luau::Parser::parse(
+            source.data(),
+            source.size(),
+            names,
+            allocator,
+            std::move(options)
+        );
+
+        if (!parseResult.errors.empty())
+        {
+            storage->error = parse_error_message(parseResult.errors.front());
+            return storage;
+        }
+
+        Luau::AstStatBlock* root = parseResult.root;
+        if (root == nullptr || root->body.size != 1)
+        {
+            storage->error = "script must use a direct `return function(...) ... end` entrypoint";
+            return storage;
+        }
+
+        const auto* ret = root->body.data[0]->as<Luau::AstStatReturn>();
+        if (ret == nullptr || ret->list.size != 1)
+        {
+            storage->error = "script must use a direct `return function(...) ... end` entrypoint";
+            return storage;
+        }
+
+        const auto* func = ret->list.data[0]->as<Luau::AstExprFunction>();
+        if (func == nullptr)
+        {
+            storage->error = "script must use a direct `return function(...) ... end` entrypoint";
+            return storage;
+        }
+
+        if (func->self != nullptr)
+        {
+            storage->error = "entrypoint functions may not use a self parameter";
+            return storage;
+        }
+
+        if (func->vararg)
+        {
+            storage->error = "entrypoint functions may not be variadic";
+            return storage;
+        }
+
+        for (const Luau::AstLocal* local : func->args)
+        {
+            if (local == nullptr || local->name.value == nullptr)
+            {
+                storage->error = "entrypoint parameters must be named";
+                return storage;
+            }
+            if (local->annotation == nullptr)
+            {
+                storage->error = std::string("parameter `") + local->name.value + "` is missing a type annotation";
+                return storage;
+            }
+
+            EntrypointParamStorage entry;
+            entry.name = local->name.value;
+            entry.annotation = trim_copy(source_slice(source, local->annotation->location));
+            if (entry.annotation.empty())
+            {
+                storage->error = std::string("parameter `") + local->name.value + "` is missing a type annotation";
+                return storage;
+            }
+
+            entry.param.name = entry.name.c_str();
+            entry.param.name_len = as_u32(entry.name.size());
+            entry.param.annotation = entry.annotation.c_str();
+            entry.param.annotation_len = as_u32(entry.annotation.size());
+            entry.param.optional = annotation_is_optional(entry.annotation) ? 1u : 0u;
+            storage->entries.push_back(std::move(entry));
+        }
+
+        storage->params.reserve(storage->entries.size());
+        for (auto& entry : storage->entries)
+        {
+            entry.param.name = entry.name.c_str();
+            entry.param.annotation = entry.annotation.c_str();
+            storage->params.push_back(entry.param);
+        }
+    }
+    catch (const std::exception& error)
+    {
+        storage->error = error.what();
+    }
+    catch (...)
+    {
+        storage->error = "unknown internal entrypoint schema extraction error";
+    }
+
+    return storage;
+}
 
 } // namespace
 
@@ -513,9 +717,44 @@ extern "C" LuauCheckResult luau_checker_check(
     return finalize_check_result(storage);
 }
 
+extern "C" LuauEntrypointSchemaResult luau_extract_entrypoint_schema(
+    const char* source,
+    uint32_t source_len
+)
+{
+    if (source == nullptr && source_len > 0)
+    {
+        auto* storage = new EntrypointSchemaStorage();
+        storage->error = "source pointer is null";
+        return LuauEntrypointSchemaResult{
+            storage,
+            nullptr,
+            0,
+            storage->error.c_str(),
+            as_u32(storage->error.size()),
+        };
+    }
+
+    const std::string ownedSource =
+        source == nullptr ? std::string() : std::string(source, source_len);
+    EntrypointSchemaStorage* storage = extract_entrypoint_schema_storage(ownedSource);
+    return LuauEntrypointSchemaResult{
+        storage,
+        storage->params.data(),
+        as_u32(storage->params.size()),
+        storage->error.empty() ? nullptr : storage->error.c_str(),
+        as_u32(storage->error.size()),
+    };
+}
+
 extern "C" void luau_check_result_free(LuauCheckResult result)
 {
     delete static_cast<CheckResultStorage*>(result._internal);
+}
+
+extern "C" void luau_entrypoint_schema_result_free(LuauEntrypointSchemaResult result)
+{
+    delete static_cast<EntrypointSchemaStorage*>(result._internal);
 }
 
 extern "C" void luau_string_free(LuauString value)

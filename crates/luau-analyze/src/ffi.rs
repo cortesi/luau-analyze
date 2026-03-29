@@ -50,6 +50,38 @@ pub struct LuauString {
     pub(crate) len: u32,
 }
 
+/// C ABI entrypoint parameter row emitted by the shim.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct LuauEntrypointParam {
+    /// Pointer to UTF-8 parameter name bytes owned by the C side.
+    pub(crate) name: *const u8,
+    /// Length of `name`.
+    pub(crate) name_len: u32,
+    /// Pointer to UTF-8 annotation bytes owned by the C side.
+    pub(crate) annotation: *const u8,
+    /// Length of `annotation`.
+    pub(crate) annotation_len: u32,
+    /// Whether the parameter is syntactically optional.
+    pub(crate) optional: u32,
+}
+
+/// C ABI entrypoint schema extraction result.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct LuauEntrypointSchemaResult {
+    /// Internal opaque pointer owned by C.
+    pub(crate) _internal: *mut c_void,
+    /// Pointer to parameter rows owned by C.
+    pub(crate) params: *const LuauEntrypointParam,
+    /// Number of parameters in `params`.
+    pub(crate) param_count: u32,
+    /// Pointer to UTF-8 error message bytes owned by C.
+    pub(crate) error: *const u8,
+    /// Length of `error`.
+    pub(crate) error_len: u32,
+}
+
 /// C ABI check options passed into a single checker invocation.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -100,8 +132,15 @@ unsafe extern "C" {
         source_len: u32,
         options: *const LuauCheckOptions,
     ) -> LuauCheckResult;
+    /// Extracts a direct functional entrypoint schema from source.
+    pub(crate) fn luau_extract_entrypoint_schema(
+        source: *const u8,
+        source_len: u32,
+    ) -> LuauEntrypointSchemaResult;
     /// Frees a check result.
     pub(crate) fn luau_check_result_free(result: LuauCheckResult);
+    /// Frees an entrypoint schema result.
+    pub(crate) fn luau_entrypoint_schema_result_free(result: LuauEntrypointSchemaResult);
     /// Frees a C ABI string.
     pub(crate) fn luau_string_free(value: LuauString);
 }

@@ -73,6 +73,24 @@ pub struct CheckResult {
     pub cancelled: bool,
 }
 
+/// One parameter extracted from a direct functional entrypoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntrypointParam {
+    /// Parameter name in source order.
+    pub name: String,
+    /// Type annotation text as written.
+    pub annotation: String,
+    /// Whether the parameter is syntactically optional.
+    pub optional: bool,
+}
+
+/// Parsed schema for a direct `return function(...) ... end` chunk.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EntrypointSchema {
+    /// Ordered parameter list for the returned function literal.
+    pub params: Vec<EntrypointParam>,
+}
+
 impl CheckResult {
     /// Returns `true` when the result contains no errors.
     pub fn is_ok(&self) -> bool {
@@ -138,6 +156,8 @@ pub enum Error {
     CreateCancellationTokenFailed,
     /// Definitions failed to parse or type-check.
     Definitions(String),
+    /// Entrypoint schema extraction failed.
+    EntrypointSchema(String),
     /// UTF-8 input is too large for the C ABI length type.
     InputTooLarge {
         /// Logical input category such as `"source"` or `"definitions"`.
@@ -156,6 +176,12 @@ impl fmt::Display for Error {
             }
             Self::Definitions(message) => {
                 write!(formatter, "failed to load Luau definitions: {message}")
+            }
+            Self::EntrypointSchema(message) => {
+                write!(
+                    formatter,
+                    "failed to extract Luau entrypoint schema: {message}"
+                )
             }
             Self::InputTooLarge { kind, len } => {
                 write!(
@@ -410,6 +436,42 @@ impl Checker {
     }
 }
 
+/// Extracts parameter names, annotation text, and optionality from a direct
+/// `return function(...) ... end` chunk.
+pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error> {
+    let (source_ptr, source_len) = ffi_str(source, "source")?;
+
+    // SAFETY: Input pointer is valid for the call duration.
+    let raw = unsafe { ffi::luau_extract_entrypoint_schema(source_ptr, source_len) };
+    let raw = RawEntrypointSchemaGuard::new(raw);
+
+    if raw.as_ref().error_len != 0 {
+        return Err(Error::EntrypointSchema(string_from_raw(
+            raw.as_ref().error,
+            raw.as_ref().error_len,
+        )));
+    }
+
+    let params = if raw.as_ref().param_count == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: `raw.params` points to `param_count` entries owned by `raw`.
+        let params_slice = unsafe {
+            slice::from_raw_parts(raw.as_ref().params, raw.as_ref().param_count as usize)
+        };
+        params_slice
+            .iter()
+            .map(|param| EntrypointParam {
+                name: string_from_raw(param.name, param.name_len),
+                annotation: string_from_raw(param.annotation, param.annotation_len),
+                optional: param.optional != 0,
+            })
+            .collect()
+    };
+
+    Ok(EntrypointSchema { params })
+}
+
 impl Drop for Checker {
     fn drop(&mut self) {
         // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
@@ -439,6 +501,31 @@ impl Drop for RawCheckResultGuard {
     fn drop(&mut self) {
         // SAFETY: `raw` came from shim and must be released exactly once.
         unsafe { ffi::luau_check_result_free(self.raw) };
+    }
+}
+
+/// RAII guard that releases a raw entrypoint schema result on scope exit.
+struct RawEntrypointSchemaGuard {
+    /// Raw entrypoint schema result allocated by the shim.
+    raw: ffi::LuauEntrypointSchemaResult,
+}
+
+impl RawEntrypointSchemaGuard {
+    /// Creates a guard for a raw entrypoint schema result.
+    fn new(raw: ffi::LuauEntrypointSchemaResult) -> Self {
+        Self { raw }
+    }
+
+    /// Returns a shared reference to the raw result.
+    fn as_ref(&self) -> &ffi::LuauEntrypointSchemaResult {
+        &self.raw
+    }
+}
+
+impl Drop for RawEntrypointSchemaGuard {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from shim and must be released exactly once.
+        unsafe { ffi::luau_entrypoint_schema_result_free(self.raw) };
     }
 }
 
@@ -484,7 +571,10 @@ fn diagnostic_sort_key(left: &Diagnostic, right: &Diagnostic) -> Ordering {
 /// Unit tests for public result helpers and policy defaults.
 #[cfg(test)]
 mod tests {
-    use super::{CheckResult, CheckerOptions, Diagnostic, Severity, checker_policy};
+    use super::{
+        CheckResult, CheckerOptions, Diagnostic, Severity, checker_policy,
+        extract_entrypoint_schema,
+    };
 
     /// Verifies `CheckResult::is_ok` is true for warning-only results.
     #[test]
@@ -544,5 +634,48 @@ mod tests {
         assert_eq!("main", options.default_module_name);
         assert_eq!("@definitions", options.default_definitions_module_name);
         assert!(options.default_timeout.is_none());
+    }
+
+    /// Verifies schema extraction reads direct function parameters in order.
+    #[test]
+    fn extract_entrypoint_schema_reads_params() {
+        let schema = extract_entrypoint_schema(
+            r#"
+return function(target: Node, count: number?, payload: JsonValue)
+    return nil
+end
+"#,
+        )
+        .expect("schema");
+        assert_eq!(3, schema.params.len());
+        assert_eq!("target", schema.params[0].name);
+        assert_eq!("Node", schema.params[0].annotation);
+        assert!(!schema.params[0].optional);
+        assert_eq!("count", schema.params[1].name);
+        assert_eq!("number?", schema.params[1].annotation);
+        assert!(schema.params[1].optional);
+        assert_eq!("payload", schema.params[2].name);
+        assert_eq!("JsonValue", schema.params[2].annotation);
+        assert!(!schema.params[2].optional);
+    }
+
+    /// Verifies schema extraction rejects indirect entrypoints.
+    #[test]
+    fn extract_entrypoint_schema_rejects_indirect_return() {
+        let error = extract_entrypoint_schema(
+            r#"
+local main = function(target: Node)
+    return nil
+end
+return main
+"#,
+        )
+        .expect_err("schema should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("script must use a direct `return function(...) ... end` entrypoint"),
+            "{error}"
+        );
     }
 }
