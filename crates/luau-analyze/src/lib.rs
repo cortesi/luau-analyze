@@ -29,7 +29,16 @@
 /// Low-level FFI declarations for the Luau analysis bridge.
 mod ffi;
 
-use std::{cmp::Ordering, error::Error as StdError, fmt, ptr, slice, sync::Arc, time::Duration};
+use std::{
+    cmp::Ordering,
+    error::Error as StdError,
+    fmt,
+    marker::PhantomData,
+    ptr::{self, NonNull},
+    slice,
+    sync::Arc,
+    time::Duration,
+};
 
 /// Default module label for source checks.
 const DEFAULT_CHECK_MODULE_NAME: &str = "main";
@@ -102,17 +111,19 @@ impl CheckResult {
 
     /// Returns all error diagnostics.
     pub fn errors(&self) -> Vec<&Diagnostic> {
-        self.diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == Severity::Error)
-            .collect()
+        self.diagnostics_with_severity(Severity::Error)
     }
 
     /// Returns all warning diagnostics.
     pub fn warnings(&self) -> Vec<&Diagnostic> {
+        self.diagnostics_with_severity(Severity::Warning)
+    }
+
+    /// Returns all diagnostics matching the requested severity.
+    fn diagnostics_with_severity(&self, severity: Severity) -> Vec<&Diagnostic> {
         self.diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+            .filter(|diagnostic| diagnostic.severity == severity)
             .collect()
     }
 
@@ -241,7 +252,7 @@ pub struct CancellationToken {
 #[derive(Debug)]
 struct CancellationTokenInner {
     /// Raw C cancellation token handle.
-    raw: *mut ffi::LuauCancellationToken,
+    raw: NonNull<ffi::LuauCancellationToken>,
 }
 
 // The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
@@ -252,7 +263,7 @@ unsafe impl Sync for CancellationTokenInner {}
 impl Drop for CancellationTokenInner {
     fn drop(&mut self) {
         // SAFETY: `raw` originates from `luau_cancellation_token_new` and is valid until drop.
-        unsafe { ffi::luau_cancellation_token_free(self.raw) };
+        unsafe { ffi::luau_cancellation_token_free(self.raw.as_ptr()) };
     }
 }
 
@@ -260,10 +271,8 @@ impl CancellationToken {
     /// Creates a new cancellation token.
     pub fn new() -> Result<Self, Error> {
         // SAFETY: Calling into shim constructor. Null indicates failure.
-        let raw = unsafe { ffi::luau_cancellation_token_new() };
-        if raw.is_null() {
-            return Err(Error::CreateCancellationTokenFailed);
-        }
+        let raw = NonNull::new(unsafe { ffi::luau_cancellation_token_new() })
+            .ok_or(Error::CreateCancellationTokenFailed)?;
         Ok(Self {
             inner: Arc::new(CancellationTokenInner { raw }),
         })
@@ -272,18 +281,18 @@ impl CancellationToken {
     /// Requests cancellation on this token.
     pub fn cancel(&self) {
         // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { ffi::luau_cancellation_token_cancel(self.inner.raw) };
+        unsafe { ffi::luau_cancellation_token_cancel(self.inner.raw.as_ptr()) };
     }
 
     /// Clears cancellation state on this token.
     pub fn reset(&self) {
         // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { ffi::luau_cancellation_token_reset(self.inner.raw) };
+        unsafe { ffi::luau_cancellation_token_reset(self.inner.raw.as_ptr()) };
     }
 
     /// Returns the raw C token pointer.
     fn raw(&self) -> *mut ffi::LuauCancellationToken {
-        self.inner.raw
+        self.inner.raw.as_ptr()
     }
 }
 
@@ -295,7 +304,7 @@ impl CancellationToken {
 /// be concurrently accessed from multiple threads.
 pub struct Checker {
     /// Opaque pointer to the native checker instance.
-    inner: *mut ffi::LuauChecker,
+    inner: NonNull<ffi::LuauChecker>,
     /// Default checker behavior options.
     options: CheckerOptions,
 }
@@ -312,11 +321,8 @@ impl Checker {
     /// Creates a checker with explicit defaults.
     pub fn with_options(options: CheckerOptions) -> Result<Self, Error> {
         // SAFETY: Calling into shim constructor. Null indicates failure.
-        let inner = unsafe { ffi::luau_checker_new() };
-        if inner.is_null() {
-            return Err(Error::CreateCheckerFailed);
-        }
-
+        let inner =
+            NonNull::new(unsafe { ffi::luau_checker_new() }).ok_or(Error::CreateCheckerFailed)?;
         Ok(Self { inner, options })
     }
 
@@ -337,30 +343,21 @@ impl Checker {
         defs: &str,
         module_name: &str,
     ) -> Result<(), Error> {
-        let (defs_ptr, defs_len) = ffi_str(defs, "definitions")?;
-        let (module_name_ptr, module_name_len) =
-            ffi_optional_str(module_name, "definition module name")?;
+        let defs = FfiStr::new(defs, "definitions")?;
+        let module_name = FfiStr::new(module_name, "definition module name")?;
 
         // SAFETY: Pointers are valid for call duration and checker handle is live.
-        let raw = unsafe {
+        let raw = RawStringGuard::new(unsafe {
             ffi::luau_checker_add_definitions(
-                self.inner,
-                defs_ptr,
-                defs_len,
-                module_name_ptr,
-                module_name_len,
+                self.inner.as_ptr(),
+                defs.ptr(),
+                defs.len(),
+                module_name.ptr(),
+                module_name.len(),
             )
-        };
+        });
 
-        let error_message = if raw.len == 0 {
-            None
-        } else {
-            Some(string_from_raw(raw.data, raw.len))
-        };
-        // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { ffi::luau_string_free(raw) };
-
-        match error_message {
+        match raw.message() {
             Some(message) => Err(Error::Definitions(message)),
             None => Ok(()),
         }
@@ -377,17 +374,17 @@ impl Checker {
         source: &str,
         options: CheckOptions<'_>,
     ) -> Result<CheckResult, Error> {
-        let (source_ptr, source_len) = ffi_str(source, "source")?;
+        let source = FfiStr::new(source, "source")?;
 
         let module_name = options
             .module_name
             .unwrap_or(self.options.default_module_name.as_str());
-        let (module_name_ptr, module_name_len) = ffi_optional_str(module_name, "module name")?;
+        let module_name = FfiStr::new(module_name, "module name")?;
 
         let timeout = options.timeout.or(self.options.default_timeout);
         let raw_options = ffi::LuauCheckOptions {
-            module_name: module_name_ptr,
-            module_name_len,
+            module_name: module_name.ptr(),
+            module_name_len: module_name.len(),
             has_timeout: u32::from(timeout.is_some()),
             timeout_seconds: timeout.map_or(0.0, |duration| duration.as_secs_f64()),
             cancellation_token: options
@@ -396,36 +393,17 @@ impl Checker {
         };
 
         // SAFETY: Input pointers and checker handle are valid for call duration.
-        let raw =
-            unsafe { ffi::luau_checker_check(self.inner, source_ptr, source_len, &raw_options) };
+        let raw = unsafe {
+            ffi::luau_checker_check(
+                self.inner.as_ptr(),
+                source.ptr(),
+                source.len(),
+                &raw_options,
+            )
+        };
         let raw = RawCheckResultGuard::new(raw);
 
-        let mut diagnostics = if raw.as_ref().diagnostic_count == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: `raw.diagnostics` points to `diagnostic_count` entries owned by `raw`.
-            let diagnostics_slice = unsafe {
-                slice::from_raw_parts(
-                    raw.as_ref().diagnostics,
-                    raw.as_ref().diagnostic_count as usize,
-                )
-            };
-            diagnostics_slice
-                .iter()
-                .map(|diagnostic| Diagnostic {
-                    line: diagnostic.line,
-                    col: diagnostic.col,
-                    end_line: diagnostic.end_line,
-                    end_col: diagnostic.end_col,
-                    severity: if diagnostic.severity == 0 {
-                        Severity::Error
-                    } else {
-                        Severity::Warning
-                    },
-                    message: string_from_raw(diagnostic.message, diagnostic.message_len),
-                })
-                .collect::<Vec<_>>()
-        };
+        let mut diagnostics = collect_diagnostics(raw.as_ref());
 
         diagnostics.sort_by(diagnostic_sort_key);
         Ok(CheckResult {
@@ -439,10 +417,10 @@ impl Checker {
 /// Extracts parameter names, annotation text, and optionality from a direct
 /// `return function(...) ... end` chunk.
 pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error> {
-    let (source_ptr, source_len) = ffi_str(source, "source")?;
+    let source = FfiStr::new(source, "source")?;
 
     // SAFETY: Input pointer is valid for the call duration.
-    let raw = unsafe { ffi::luau_extract_entrypoint_schema(source_ptr, source_len) };
+    let raw = unsafe { ffi::luau_extract_entrypoint_schema(source.ptr(), source.len()) };
     let raw = RawEntrypointSchemaGuard::new(raw);
 
     if raw.as_ref().error_len != 0 {
@@ -452,30 +430,56 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error
         )));
     }
 
-    let params = if raw.as_ref().param_count == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: `raw.params` points to `param_count` entries owned by `raw`.
-        let params_slice = unsafe {
-            slice::from_raw_parts(raw.as_ref().params, raw.as_ref().param_count as usize)
-        };
-        params_slice
-            .iter()
-            .map(|param| EntrypointParam {
-                name: string_from_raw(param.name, param.name_len),
-                annotation: string_from_raw(param.annotation, param.annotation_len),
-                optional: param.optional != 0,
-            })
-            .collect()
-    };
-
-    Ok(EntrypointSchema { params })
+    Ok(EntrypointSchema {
+        params: collect_entrypoint_params(raw.as_ref()),
+    })
 }
 
 impl Drop for Checker {
     fn drop(&mut self) {
         // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
-        unsafe { ffi::luau_checker_free(self.inner) };
+        unsafe { ffi::luau_checker_free(self.inner.as_ptr()) };
+    }
+}
+
+/// Borrowed UTF-8 input prepared for a C ABI call.
+#[derive(Clone, Copy)]
+struct FfiStr<'a> {
+    /// Pointer to the UTF-8 bytes, or null for empty strings.
+    ptr: *const u8,
+    /// Length of the UTF-8 payload in bytes.
+    len: u32,
+    /// Ties the raw pointer to the borrowed Rust string lifetime.
+    _marker: PhantomData<&'a str>,
+}
+
+impl<'a> FfiStr<'a> {
+    /// Converts a Rust string to a pointer-length pair accepted by the C ABI.
+    fn new(value: &'a str, kind: &'static str) -> Result<Self, Error> {
+        let len = u32::try_from(value.len()).map_err(|_| Error::InputTooLarge {
+            kind,
+            len: value.len(),
+        })?;
+
+        Ok(Self {
+            ptr: if len == 0 {
+                ptr::null()
+            } else {
+                value.as_ptr()
+            },
+            len,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Returns the UTF-8 pointer for the C ABI.
+    fn ptr(self) -> *const u8 {
+        self.ptr
+    }
+
+    /// Returns the UTF-8 byte length for the C ABI.
+    fn len(self) -> u32 {
+        self.len
     }
 }
 
@@ -504,6 +508,35 @@ impl Drop for RawCheckResultGuard {
     }
 }
 
+/// RAII guard that releases a raw string result on scope exit.
+struct RawStringGuard {
+    /// Raw string result allocated by the shim.
+    raw: ffi::LuauString,
+}
+
+impl RawStringGuard {
+    /// Creates a guard for a raw string result.
+    fn new(raw: ffi::LuauString) -> Self {
+        Self { raw }
+    }
+
+    /// Reads the string payload when the shim returned one.
+    fn message(&self) -> Option<String> {
+        if self.raw.len == 0 {
+            None
+        } else {
+            Some(string_from_raw(self.raw.data, self.raw.len))
+        }
+    }
+}
+
+impl Drop for RawStringGuard {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from shim and must be released exactly once.
+        unsafe { ffi::luau_string_free(self.raw) };
+    }
+}
+
 /// RAII guard that releases a raw entrypoint schema result on scope exit.
 struct RawEntrypointSchemaGuard {
     /// Raw entrypoint schema result allocated by the shim.
@@ -529,25 +562,6 @@ impl Drop for RawEntrypointSchemaGuard {
     }
 }
 
-/// Converts a required Rust string to C pointer and `u32` length.
-fn ffi_str(value: &str, kind: &'static str) -> Result<(*const u8, u32), Error> {
-    let len = u32::try_from(value.len()).map_err(|_| Error::InputTooLarge {
-        kind,
-        len: value.len(),
-    })?;
-
-    if len == 0 {
-        Ok((ptr::null(), 0))
-    } else {
-        Ok((value.as_ptr(), len))
-    }
-}
-
-/// Converts an optional-ish Rust string to C pointer and `u32` length.
-fn ffi_optional_str(value: &str, kind: &'static str) -> Result<(*const u8, u32), Error> {
-    ffi_str(value, kind)
-}
-
 /// Converts raw UTF-8 bytes from C into a Rust `String`.
 fn string_from_raw(ptr: *const u8, len: u32) -> String {
     if ptr.is_null() || len == 0 {
@@ -557,6 +571,56 @@ fn string_from_raw(ptr: *const u8, len: u32) -> String {
     // SAFETY: `ptr` points to `len` bytes provided by the shim for this call scope.
     let bytes = unsafe { slice::from_raw_parts(ptr, len as usize) };
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+impl Severity {
+    /// Converts the shim severity code into the public enum.
+    fn from_ffi(code: u32) -> Self {
+        match code {
+            0 => Self::Error,
+            _ => Self::Warning,
+        }
+    }
+}
+
+/// Converts diagnostic rows owned by the shim into Rust values.
+fn collect_diagnostics(raw: &ffi::LuauCheckResult) -> Vec<Diagnostic> {
+    // SAFETY: `raw.diagnostics` points to `diagnostic_count` entries owned by `raw`.
+    unsafe { raw_slice(raw.diagnostics, raw.diagnostic_count) }
+        .iter()
+        .map(|diagnostic| Diagnostic {
+            line: diagnostic.line,
+            col: diagnostic.col,
+            end_line: diagnostic.end_line,
+            end_col: diagnostic.end_col,
+            severity: Severity::from_ffi(diagnostic.severity),
+            message: string_from_raw(diagnostic.message, diagnostic.message_len),
+        })
+        .collect()
+}
+
+/// Converts entrypoint parameter rows owned by the shim into Rust values.
+fn collect_entrypoint_params(raw: &ffi::LuauEntrypointSchemaResult) -> Vec<EntrypointParam> {
+    // SAFETY: `raw.params` points to `param_count` entries owned by `raw`.
+    unsafe { raw_slice(raw.params, raw.param_count) }
+        .iter()
+        .map(|param| EntrypointParam {
+            name: string_from_raw(param.name, param.name_len),
+            annotation: string_from_raw(param.annotation, param.annotation_len),
+            optional: param.optional != 0,
+        })
+        .collect()
+}
+
+/// Forms a borrowed slice from a non-owning C pointer and element count.
+unsafe fn raw_slice<'a, T>(ptr: *const T, len: u32) -> &'a [T] {
+    if len == 0 {
+        &[]
+    } else {
+        debug_assert!(!ptr.is_null(), "non-empty shim slice must not be null");
+        // SAFETY: The caller guarantees `ptr` is valid for `len` elements.
+        unsafe { slice::from_raw_parts(ptr, len as usize) }
+    }
 }
 
 /// Sorts diagnostics by location, then severity, then message.
