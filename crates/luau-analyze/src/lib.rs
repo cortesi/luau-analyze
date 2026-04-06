@@ -32,6 +32,7 @@ mod ffi;
 use std::{
     cmp::Ordering,
     error::Error as StdError,
+    ffi::c_void,
     fmt,
     marker::PhantomData,
     ptr::{self, NonNull},
@@ -151,6 +152,8 @@ pub const fn checker_policy() -> CheckerPolicy {
 /// Errors returned by checker construction and definition loading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// The private native checker library could not be loaded.
+    NativeLibrary(String),
     /// Checker creation failed in the native layer.
     CreateCheckerFailed,
     /// Cancellation token creation failed in the native layer.
@@ -171,6 +174,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NativeLibrary(message) => formatter.write_str(message),
             Self::CreateCheckerFailed => formatter.write_str("failed to create Luau checker"),
             Self::CreateCancellationTokenFailed => {
                 formatter.write_str("failed to create Luau cancellation token")
@@ -241,8 +245,10 @@ pub struct CancellationToken {
 /// Shared cancellation token internals.
 #[derive(Debug)]
 struct CancellationTokenInner {
+    /// Loaded native checker entrypoints.
+    api: &'static ffi::Api,
     /// Raw C cancellation token handle.
-    raw: NonNull<ffi::LuauCancellationToken>,
+    raw: NonNull<c_void>,
 }
 
 // The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
@@ -253,35 +259,36 @@ unsafe impl Sync for CancellationTokenInner {}
 impl Drop for CancellationTokenInner {
     fn drop(&mut self) {
         // SAFETY: `raw` originates from `luau_cancellation_token_new` and is valid until drop.
-        unsafe { ffi::luau_cancellation_token_free(self.raw.as_ptr()) };
+        unsafe { (self.api.luau_cancellation_token_free)(self.raw.as_ptr()) };
     }
 }
 
 impl CancellationToken {
     /// Creates a new cancellation token.
     pub fn new() -> Result<Self, Error> {
+        let api = native_api()?;
         // SAFETY: Calling into shim constructor. Null indicates failure.
-        let raw = NonNull::new(unsafe { ffi::luau_cancellation_token_new() })
+        let raw = NonNull::new(unsafe { (api.luau_cancellation_token_new)() })
             .ok_or(Error::CreateCancellationTokenFailed)?;
         Ok(Self {
-            inner: Arc::new(CancellationTokenInner { raw }),
+            inner: Arc::new(CancellationTokenInner { api, raw }),
         })
     }
 
     /// Requests cancellation on this token.
     pub fn cancel(&self) {
         // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { ffi::luau_cancellation_token_cancel(self.inner.raw.as_ptr()) };
+        unsafe { (self.inner.api.luau_cancellation_token_cancel)(self.inner.raw.as_ptr()) };
     }
 
     /// Clears cancellation state on this token.
     pub fn reset(&self) {
         // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { ffi::luau_cancellation_token_reset(self.inner.raw.as_ptr()) };
+        unsafe { (self.inner.api.luau_cancellation_token_reset)(self.inner.raw.as_ptr()) };
     }
 
     /// Returns the raw C token pointer.
-    fn raw(&self) -> *mut ffi::LuauCancellationToken {
+    fn raw(&self) -> *mut c_void {
         self.inner.raw.as_ptr()
     }
 }
@@ -293,8 +300,10 @@ impl CancellationToken {
 /// from the checker require exclusive `&mut self` access, meaning it cannot
 /// be concurrently accessed from multiple threads.
 pub struct Checker {
+    /// Loaded native checker entrypoints.
+    api: &'static ffi::Api,
     /// Opaque pointer to the native checker instance.
-    inner: NonNull<ffi::LuauChecker>,
+    inner: NonNull<c_void>,
     /// Default checker behavior options.
     options: CheckerOptions,
 }
@@ -310,10 +319,15 @@ impl Checker {
 
     /// Creates a checker with explicit defaults.
     pub fn with_options(options: CheckerOptions) -> Result<Self, Error> {
+        let api = native_api()?;
         // SAFETY: Calling into shim constructor. Null indicates failure.
         let inner =
-            NonNull::new(unsafe { ffi::luau_checker_new() }).ok_or(Error::CreateCheckerFailed)?;
-        Ok(Self { inner, options })
+            NonNull::new(unsafe { (api.luau_checker_new)() }).ok_or(Error::CreateCheckerFailed)?;
+        Ok(Self {
+            api,
+            inner,
+            options,
+        })
     }
 
     /// Returns immutable access to default checker options.
@@ -337,8 +351,8 @@ impl Checker {
         let module_name = FfiStr::new(module_name, "definition module name")?;
 
         // SAFETY: Pointers are valid for call duration and checker handle is live.
-        let raw = RawStringGuard::new(unsafe {
-            ffi::luau_checker_add_definitions(
+        let raw = RawStringGuard::new(self.api, unsafe {
+            (self.api.luau_checker_add_definitions)(
                 self.inner.as_ptr(),
                 defs.ptr(),
                 defs.len(),
@@ -384,14 +398,14 @@ impl Checker {
 
         // SAFETY: Input pointers and checker handle are valid for call duration.
         let raw = unsafe {
-            ffi::luau_checker_check(
+            (self.api.luau_checker_check)(
                 self.inner.as_ptr(),
                 source.ptr(),
                 source.len(),
                 &raw_options,
             )
         };
-        let raw = RawCheckResultGuard::new(raw);
+        let raw = RawCheckResultGuard::new(self.api, raw);
 
         let mut diagnostics = collect_diagnostics(raw.as_ref());
 
@@ -408,10 +422,11 @@ impl Checker {
 /// `return function(...) ... end` chunk.
 pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error> {
     let source = FfiStr::new(source, "source")?;
+    let api = native_api()?;
 
     // SAFETY: Input pointer is valid for the call duration.
-    let raw = unsafe { ffi::luau_extract_entrypoint_schema(source.ptr(), source.len()) };
-    let raw = RawEntrypointSchemaGuard::new(raw);
+    let raw = unsafe { (api.luau_extract_entrypoint_schema)(source.ptr(), source.len()) };
+    let raw = RawEntrypointSchemaGuard::new(api, raw);
 
     if raw.as_ref().error_len != 0 {
         return Err(Error::EntrypointSchema(string_from_raw(
@@ -428,7 +443,7 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error
 impl Drop for Checker {
     fn drop(&mut self) {
         // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
-        unsafe { ffi::luau_checker_free(self.inner.as_ptr()) };
+        unsafe { (self.api.luau_checker_free)(self.inner.as_ptr()) };
     }
 }
 
@@ -475,14 +490,16 @@ impl<'a> FfiStr<'a> {
 
 /// RAII guard that releases a raw check result on scope exit.
 struct RawCheckResultGuard {
+    /// Loaded native checker entrypoints.
+    api: &'static ffi::Api,
     /// Raw check result allocated by the shim.
     raw: ffi::LuauCheckResult,
 }
 
 impl RawCheckResultGuard {
     /// Creates a guard for a raw check result.
-    fn new(raw: ffi::LuauCheckResult) -> Self {
-        Self { raw }
+    fn new(api: &'static ffi::Api, raw: ffi::LuauCheckResult) -> Self {
+        Self { api, raw }
     }
 
     /// Returns a shared reference to the raw check result.
@@ -494,20 +511,22 @@ impl RawCheckResultGuard {
 impl Drop for RawCheckResultGuard {
     fn drop(&mut self) {
         // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { ffi::luau_check_result_free(self.raw) };
+        unsafe { (self.api.luau_check_result_free)(self.raw) };
     }
 }
 
 /// RAII guard that releases a raw string result on scope exit.
 struct RawStringGuard {
+    /// Loaded native checker entrypoints.
+    api: &'static ffi::Api,
     /// Raw string result allocated by the shim.
     raw: ffi::LuauString,
 }
 
 impl RawStringGuard {
     /// Creates a guard for a raw string result.
-    fn new(raw: ffi::LuauString) -> Self {
-        Self { raw }
+    fn new(api: &'static ffi::Api, raw: ffi::LuauString) -> Self {
+        Self { api, raw }
     }
 
     /// Reads the string payload when the shim returned one.
@@ -523,20 +542,22 @@ impl RawStringGuard {
 impl Drop for RawStringGuard {
     fn drop(&mut self) {
         // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { ffi::luau_string_free(self.raw) };
+        unsafe { (self.api.luau_string_free)(self.raw) };
     }
 }
 
 /// RAII guard that releases a raw entrypoint schema result on scope exit.
 struct RawEntrypointSchemaGuard {
+    /// Loaded native checker entrypoints.
+    api: &'static ffi::Api,
     /// Raw entrypoint schema result allocated by the shim.
     raw: ffi::LuauEntrypointSchemaResult,
 }
 
 impl RawEntrypointSchemaGuard {
     /// Creates a guard for a raw entrypoint schema result.
-    fn new(raw: ffi::LuauEntrypointSchemaResult) -> Self {
-        Self { raw }
+    fn new(api: &'static ffi::Api, raw: ffi::LuauEntrypointSchemaResult) -> Self {
+        Self { api, raw }
     }
 
     /// Returns a shared reference to the raw result.
@@ -548,8 +569,13 @@ impl RawEntrypointSchemaGuard {
 impl Drop for RawEntrypointSchemaGuard {
     fn drop(&mut self) {
         // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { ffi::luau_entrypoint_schema_result_free(self.raw) };
+        unsafe { (self.api.luau_entrypoint_schema_result_free)(self.raw) };
     }
+}
+
+/// Returns the loaded native checker entrypoints.
+fn native_api() -> Result<&'static ffi::Api, Error> {
+    ffi::api().map_err(Error::NativeLibrary)
 }
 
 /// Converts raw UTF-8 bytes from C into a Rust `String`.

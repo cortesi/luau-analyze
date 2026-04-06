@@ -9,6 +9,7 @@ mod tests {
     };
 
     use luau_analyze::{CancellationToken, CheckOptions, Checker, Severity};
+    use mlua::Lua;
 
     /// Expected result marker parsed from script header comments.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,12 +185,78 @@ mod tests {
         assert!(third.is_ok(), "third check should still succeed");
     }
 
+    /// Verifies the checker remains stable when another Luau embedding is linked into the binary.
+    #[test]
+    fn checker_coexists_with_mlua() {
+        let _lua = Lua::new();
+        let mut checker = checker_with_demo_definitions();
+
+        let result = checker
+            .check(
+                r#"
+            --!strict
+            local todo = Todo.create():content("Review"):save()
+            todo:complete()
+            "#,
+            )
+            .expect("check should run without internal compiler errors");
+
+        assert!(result.is_ok(), "expected script to pass: {result:#?}");
+    }
+
+    /// Verifies the checker does not depend on the build-directory native library still existing.
+    #[test]
+    fn checker_works_without_build_directory_native_library() {
+        let build_library_path = PathBuf::from(env!("LUAU_ANALYZE_NATIVE_LIB_PATH"));
+        let backup_path = build_library_path.with_extension(format!(
+            "{}.bak",
+            build_library_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("tmp")
+        ));
+
+        fs::rename(&build_library_path, &backup_path)
+            .expect("should be able to temporarily hide the build-directory native library");
+        let _restore = NativeLibraryRestore {
+            original: build_library_path,
+            backup: backup_path,
+        };
+
+        let mut checker = checker_with_demo_definitions();
+        let result = checker
+            .check(
+                r#"
+            --!strict
+            local todo = Todo.create():content("Review"):save()
+            todo:complete()
+            "#,
+            )
+            .expect("check should not depend on the original build output path");
+
+        assert!(result.is_ok(), "expected script to pass: {result:#?}");
+    }
+
     /// Verifies empty source does not produce type errors.
     #[test]
     fn empty_script_is_ok() {
         let mut checker = Checker::new().expect("checker creation should succeed");
         let result = checker.check("").unwrap();
         assert!(result.is_ok(), "empty script should not produce errors");
+    }
+
+    /// Restores the build-directory native checker library after one test hides it.
+    struct NativeLibraryRestore {
+        /// Original build-output library path.
+        original: PathBuf,
+        /// Temporary backup path used during the test.
+        backup: PathBuf,
+    }
+
+    impl Drop for NativeLibraryRestore {
+        fn drop(&mut self) {
+            drop(fs::rename(&self.backup, &self.original));
+        }
     }
 
     /// Verifies syntax errors are surfaced as diagnostics.

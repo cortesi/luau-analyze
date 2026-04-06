@@ -20,6 +20,10 @@
 
 extern "C" {
 
+#ifndef LUAU_ANALYZE_EXPORT
+#define LUAU_ANALYZE_EXPORT
+#endif
+
 struct LuauDiagnostic
 {
     uint32_t line;
@@ -78,35 +82,35 @@ struct LuauCheckOptions
 
 typedef struct LuauChecker LuauChecker;
 
-LuauChecker* luau_checker_new(void);
-void luau_checker_free(LuauChecker* checker);
+LUAU_ANALYZE_EXPORT LuauChecker* luau_checker_new(void);
+LUAU_ANALYZE_EXPORT void luau_checker_free(LuauChecker* checker);
 
-LuauCancellationToken* luau_cancellation_token_new(void);
-void luau_cancellation_token_free(LuauCancellationToken* token);
-void luau_cancellation_token_cancel(LuauCancellationToken* token);
-void luau_cancellation_token_reset(LuauCancellationToken* token);
+LUAU_ANALYZE_EXPORT LuauCancellationToken* luau_cancellation_token_new(void);
+LUAU_ANALYZE_EXPORT void luau_cancellation_token_free(LuauCancellationToken* token);
+LUAU_ANALYZE_EXPORT void luau_cancellation_token_cancel(LuauCancellationToken* token);
+LUAU_ANALYZE_EXPORT void luau_cancellation_token_reset(LuauCancellationToken* token);
 
-LuauString luau_checker_add_definitions(
+LUAU_ANALYZE_EXPORT LuauString luau_checker_add_definitions(
     LuauChecker* checker,
     const char* defs,
     uint32_t defs_len,
     const char* module_name,
     uint32_t module_name_len
 );
-LuauCheckResult luau_checker_check(
+LUAU_ANALYZE_EXPORT LuauCheckResult luau_checker_check(
     LuauChecker* checker,
     const char* source,
     uint32_t source_len,
     const LuauCheckOptions* options
 );
-LuauEntrypointSchemaResult luau_extract_entrypoint_schema(
+LUAU_ANALYZE_EXPORT LuauEntrypointSchemaResult luau_extract_entrypoint_schema(
     const char* source,
     uint32_t source_len
 );
 
-void luau_check_result_free(LuauCheckResult result);
-void luau_entrypoint_schema_result_free(LuauEntrypointSchemaResult result);
-void luau_string_free(LuauString value);
+LUAU_ANALYZE_EXPORT void luau_check_result_free(LuauCheckResult result);
+LUAU_ANALYZE_EXPORT void luau_entrypoint_schema_result_free(LuauEntrypointSchemaResult result);
+LUAU_ANALYZE_EXPORT void luau_string_free(LuauString value);
 }
 
 namespace

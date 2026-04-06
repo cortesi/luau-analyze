@@ -40,6 +40,10 @@ include = [
 workspace = true
 
 [dependencies]
+libloading = "0.8.9"
 
 [build-dependencies]
 cc = { version = "1.2", features = ["parallel"] }
+
+[dev-dependencies]
+mlua = { version = "0.11.6", features = ["luau", "serde"] }
