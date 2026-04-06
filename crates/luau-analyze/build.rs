@@ -2,6 +2,8 @@
 //!
 //! Compiles Luau C++ libraries and the local C shim into static libraries.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -29,6 +31,9 @@ fn main() {
     let config_include = luau_root.join("Config/include");
     let analysis_include = luau_root.join("Analysis/include");
 
+    let target = env::var("TARGET").unwrap_or_default();
+    let host = env::var("HOST").unwrap_or_default();
+
     // Mirror the proven luau-src-rs setup with C++17 and shared defines.
     let mut base = cc::Build::new();
     base.cpp(true)
@@ -38,6 +43,8 @@ fn main() {
         .define("LUA_VECTOR_SIZE", "3")
         .define("LUA_API", "extern \"C\"")
         .define("LUACODE_API", "extern \"C\"");
+
+    configure_archiver(&mut base, &target);
 
     if cfg!(debug_assertions) {
         base.define("LUAU_ENABLE_ASSERT", None);
@@ -128,8 +135,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=luau_ast");
     println!("cargo:rustc-link-lib=static=luau_common");
 
-    let target = env::var("TARGET").unwrap_or_default();
-    let host = env::var("HOST").unwrap_or_default();
     if let Some(stdlib) = cpp_stdlib(&target, &host) {
         println!("cargo:rustc-link-lib={stdlib}");
     }
@@ -149,6 +154,73 @@ fn build_cpp_library(name: &str, sources: &[PathBuf], includes: &[PathBuf], base
         build.file(source);
     }
     build.compile(name);
+}
+
+/// Configures a macOS-safe archiver when Cargo has not already provided one.
+fn configure_archiver(build: &mut cc::Build, target: &str) {
+    if !target.contains("apple") || archiver_override_is_set(target) {
+        return;
+    }
+
+    if let Some(llvm_ar) = find_tool("llvm-ar") {
+        build.archiver(llvm_ar);
+        return;
+    }
+
+    let wrapper = write_apple_ar_wrapper();
+    build.archiver(wrapper);
+}
+
+/// Returns true when the caller has already chosen an archiver.
+fn archiver_override_is_set(target: &str) -> bool {
+    env::var_os("AR").is_some()
+        || env::var_os("HOST_AR").is_some()
+        || env::var_os(format!("AR_{}", target.replace('-', "_"))).is_some()
+        || env::var_os(format!("AR_{target}")).is_some()
+        || env::var_os(format!(
+            "CARGO_TARGET_{}_AR",
+            target.replace('-', "_").to_uppercase()
+        ))
+        .is_some()
+}
+
+/// Finds a tool either on `PATH` or in the common Homebrew LLVM locations.
+fn find_tool(name: &str) -> Option<PathBuf> {
+    let path_dirs = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_dirs) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    [
+        PathBuf::from("/opt/homebrew/opt/llvm/bin").join(name),
+        PathBuf::from("/usr/local/opt/llvm/bin").join(name),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+/// Writes a tiny wrapper that strips Apple's unsupported deterministic `-D` flag.
+fn write_apple_ar_wrapper() -> PathBuf {
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set"));
+    let wrapper_path = out_dir.join("apple-ar");
+    fs::write(&wrapper_path, APPLE_AR_WRAPPER)
+        .unwrap_or_else(|error| panic!("failed to write `{}`: {error}", wrapper_path.display()));
+
+    #[cfg(unix)]
+    {
+        let permissions = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(&wrapper_path, permissions).unwrap_or_else(|error| {
+            panic!(
+                "failed to set execute permissions on `{}`: {error}",
+                wrapper_path.display()
+            )
+        });
+    }
+
+    wrapper_path
 }
 
 /// Collects and deterministically sorts all `.cpp` files in a source directory.
@@ -186,3 +258,73 @@ fn cpp_stdlib(target: &str, host: &str) -> Option<String> {
         Some("stdc++".to_owned())
     }
 }
+
+/// Wrapper that prefers `llvm-ar` and otherwise removes Apple's unsupported `-D` flag.
+const APPLE_AR_WRAPPER: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+find_llvm_ar() {
+    if command -v llvm-ar >/dev/null 2>&1; then
+        command -v llvm-ar
+        return 0
+    fi
+
+    local candidate
+    for candidate in \
+        /opt/homebrew/opt/llvm/bin/llvm-ar \
+        /usr/local/opt/llvm/bin/llvm-ar
+    do
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+if llvm_ar=$(find_llvm_ar); then
+    exec "$llvm_ar" "$@"
+fi
+
+sanitize_mode_flag() {
+    local arg=$1
+
+    case "$arg" in
+        -D)
+            return 1
+            ;;
+        -[A-Za-z]*)
+            arg="-${arg:1}"
+            ;;
+        [A-Za-z]*)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    arg="${arg//D/}"
+    if [[ "$arg" == "-" || -z "$arg" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$arg"
+}
+
+sanitized=()
+mode_sanitized=false
+for arg in "$@"; do
+    if ! $mode_sanitized; then
+        if sanitized_arg=$(sanitize_mode_flag "$arg"); then
+            sanitized+=("$sanitized_arg")
+            mode_sanitized=true
+            continue
+        fi
+    fi
+
+    sanitized+=("$arg")
+done
+
+exec /usr/bin/ar "${sanitized[@]}"
+"#;

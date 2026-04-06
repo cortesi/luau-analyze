@@ -57,10 +57,38 @@ To build `luau-analyze`, you must have:
 - If you are building from a git checkout, you must initialize the Luau submodule: `git submodule update --init --recursive`. (This is automatically included when using the crate from crates.io).
 - Currently supported platforms: macOS and Linux. Windows is currently unsupported.
 
+### macOS Native Toolchain
+
+On macOS, some native dependencies may be archived in deterministic mode during
+builds. Apple's system `ar` does not support GNU-style `-D`, which can produce
+warnings like:
+
+```text
+ar: illegal option -- D
+```
+
+`luau-analyze` works around this automatically when it builds its vendored Luau
+archives, so you should not need any extra configuration for this crate.
+
+If you still want to force LLVM binutils, or if another native dependency emits
+the same warning, you can point Cargo at `llvm-ar` explicitly:
+
+```sh
+brew install llvm
+export AR="$(brew --prefix llvm)/bin/llvm-ar"
+export CARGO_TARGET_AARCH64_APPLE_DARWIN_AR="$AR"
+```
+
+If you build for Intel macOS as well, set `CARGO_TARGET_X86_64_APPLE_DARWIN_AR`
+to the same path.
+
 ## Troubleshooting
 
 - **Missing Luau sources:** If your build fails with "missing Luau sources", ensure you have initialized git submodules.
 - **Unsupported toolchain:** If the build fails during C++ compilation, ensure you are not on Windows/MSVC and that your C++ compiler supports C++17.
+- **`ar: illegal option -- D` on macOS:** `luau-analyze` suppresses this when
+  building its own vendored Luau archives. If you still see the warning, it is
+  likely coming from another native dependency in your build graph.
 - **Crate vs Git differences:** When using the crates.io package, the necessary Luau source files are bundled. When working on a local checkout, you must use the git submodule.
 
 ## Realtime Policy
