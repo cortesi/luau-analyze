@@ -1,15 +1,15 @@
 # luau-analyze
 
+![Discord](https://img.shields.io/discord/1381424110831145070?style=flat-square&logo=rust&link=https%3A%2F%2Fdiscord.gg%2FfHmRmuBDxF)
+[![Crates.io](https://img.shields.io/crates/v/luau-analyze.svg)](https://crates.io/crates/luau-analyze)
+[![Documentation](https://docs.rs/luau-analyze/badge.svg)](https://docs.rs/luau-analyze)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 In-process Luau type checking for Rust. Wraps the Luau `Analysis` frontend via
 a C shim so you can load host definitions, check Luau source, and get
 structured diagnostics without spawning an external process.
 
 ## Usage
-
-```toml
-[dependencies]
-luau-analyze = "0.1.0"
-```
 
 ```rust
 use luau_analyze::Checker;
