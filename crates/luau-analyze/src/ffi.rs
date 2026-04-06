@@ -110,31 +110,60 @@ pub struct LuauCheckOptions {
     pub(crate) has_timeout: u32,
     /// Timeout in seconds when `has_timeout` is non-zero.
     pub(crate) timeout_seconds: f64,
-    /// Optional cancellation token pointer.
-    pub(crate) cancellation_token: *mut c_void,
+    /// Optional cancellation token handle.
+    pub(crate) cancellation_token: TokenHandle,
+}
+
+/// Opaque checker handle returned by the native shim.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub(crate) struct CheckerHandle(*mut c_void);
+
+impl CheckerHandle {
+    /// Returns whether the handle is null.
+    pub(crate) fn is_null(self) -> bool {
+        self.0.is_null()
+    }
+}
+
+/// Opaque cancellation token handle returned by the native shim.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub(crate) struct TokenHandle(*mut c_void);
+
+impl TokenHandle {
+    /// Returns a null token handle.
+    pub(crate) const fn null() -> Self {
+        Self(std::ptr::null_mut())
+    }
+
+    /// Returns whether the handle is null.
+    pub(crate) fn is_null(self) -> bool {
+        self.0.is_null()
+    }
 }
 
 /// Loaded native shim entrypoints.
 #[derive(Debug)]
 pub struct Api {
     /// Creates a new checker instance.
-    pub(crate) luau_checker_new: unsafe extern "C" fn() -> *mut c_void,
+    pub(crate) luau_checker_new: unsafe extern "C" fn() -> CheckerHandle,
     /// Frees a checker instance.
-    pub(crate) luau_checker_free: unsafe extern "C" fn(*mut c_void),
+    pub(crate) luau_checker_free: unsafe extern "C" fn(CheckerHandle),
     /// Creates a cancellation token.
-    pub(crate) luau_cancellation_token_new: unsafe extern "C" fn() -> *mut c_void,
+    pub(crate) luau_cancellation_token_new: unsafe extern "C" fn() -> TokenHandle,
     /// Frees a cancellation token.
-    pub(crate) luau_cancellation_token_free: unsafe extern "C" fn(*mut c_void),
+    pub(crate) luau_cancellation_token_free: unsafe extern "C" fn(TokenHandle),
     /// Marks a cancellation token as cancelled.
-    pub(crate) luau_cancellation_token_cancel: unsafe extern "C" fn(*mut c_void),
+    pub(crate) luau_cancellation_token_cancel: unsafe extern "C" fn(TokenHandle),
     /// Clears cancellation state on a token.
-    pub(crate) luau_cancellation_token_reset: unsafe extern "C" fn(*mut c_void),
+    pub(crate) luau_cancellation_token_reset: unsafe extern "C" fn(TokenHandle),
     /// Loads definition source into the checker.
     pub(crate) luau_checker_add_definitions:
-        unsafe extern "C" fn(*mut c_void, *const u8, u32, *const u8, u32) -> LuauString,
+        unsafe extern "C" fn(CheckerHandle, *const u8, u32, *const u8, u32) -> LuauString,
     /// Type-checks a source module.
     pub(crate) luau_checker_check: unsafe extern "C" fn(
-        *mut c_void,
+        CheckerHandle,
         *const u8,
         u32,
         *const LuauCheckOptions,

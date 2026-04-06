@@ -30,14 +30,7 @@
 mod ffi;
 
 use std::{
-    cmp::Ordering,
-    error::Error as StdError,
-    ffi::c_void,
-    fmt,
-    marker::PhantomData,
-    ptr::{self, NonNull},
-    slice,
-    sync::Arc,
+    cmp::Ordering, error::Error as StdError, fmt, marker::PhantomData, ptr, slice, sync::Arc,
     time::Duration,
 };
 
@@ -248,7 +241,7 @@ struct CancellationTokenInner {
     /// Loaded native checker entrypoints.
     api: &'static ffi::Api,
     /// Raw C cancellation token handle.
-    raw: NonNull<c_void>,
+    raw: ffi::TokenHandle,
 }
 
 // The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
@@ -259,7 +252,7 @@ unsafe impl Sync for CancellationTokenInner {}
 impl Drop for CancellationTokenInner {
     fn drop(&mut self) {
         // SAFETY: `raw` originates from `luau_cancellation_token_new` and is valid until drop.
-        unsafe { (self.api.luau_cancellation_token_free)(self.raw.as_ptr()) };
+        unsafe { (self.api.luau_cancellation_token_free)(self.raw) };
     }
 }
 
@@ -268,8 +261,10 @@ impl CancellationToken {
     pub fn new() -> Result<Self, Error> {
         let api = native_api()?;
         // SAFETY: Calling into shim constructor. Null indicates failure.
-        let raw = NonNull::new(unsafe { (api.luau_cancellation_token_new)() })
-            .ok_or(Error::CreateCancellationTokenFailed)?;
+        let raw = unsafe { (api.luau_cancellation_token_new)() };
+        if raw.is_null() {
+            return Err(Error::CreateCancellationTokenFailed);
+        }
         Ok(Self {
             inner: Arc::new(CancellationTokenInner { api, raw }),
         })
@@ -278,18 +273,18 @@ impl CancellationToken {
     /// Requests cancellation on this token.
     pub fn cancel(&self) {
         // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { (self.inner.api.luau_cancellation_token_cancel)(self.inner.raw.as_ptr()) };
+        unsafe { (self.inner.api.luau_cancellation_token_cancel)(self.inner.raw) };
     }
 
     /// Clears cancellation state on this token.
     pub fn reset(&self) {
         // SAFETY: `raw` is valid while `inner` is alive.
-        unsafe { (self.inner.api.luau_cancellation_token_reset)(self.inner.raw.as_ptr()) };
+        unsafe { (self.inner.api.luau_cancellation_token_reset)(self.inner.raw) };
     }
 
-    /// Returns the raw C token pointer.
-    fn raw(&self) -> *mut c_void {
-        self.inner.raw.as_ptr()
+    /// Returns the raw C token handle.
+    fn raw(&self) -> ffi::TokenHandle {
+        self.inner.raw
     }
 }
 
@@ -302,8 +297,8 @@ impl CancellationToken {
 pub struct Checker {
     /// Loaded native checker entrypoints.
     api: &'static ffi::Api,
-    /// Opaque pointer to the native checker instance.
-    inner: NonNull<c_void>,
+    /// Opaque handle to the native checker instance.
+    inner: ffi::CheckerHandle,
     /// Default checker behavior options.
     options: CheckerOptions,
 }
@@ -321,8 +316,10 @@ impl Checker {
     pub fn with_options(options: CheckerOptions) -> Result<Self, Error> {
         let api = native_api()?;
         // SAFETY: Calling into shim constructor. Null indicates failure.
-        let inner =
-            NonNull::new(unsafe { (api.luau_checker_new)() }).ok_or(Error::CreateCheckerFailed)?;
+        let inner = unsafe { (api.luau_checker_new)() };
+        if inner.is_null() {
+            return Err(Error::CreateCheckerFailed);
+        }
         Ok(Self {
             api,
             inner,
@@ -353,7 +350,7 @@ impl Checker {
         // SAFETY: Pointers are valid for call duration and checker handle is live.
         let raw = RawStringGuard::new(self.api, unsafe {
             (self.api.luau_checker_add_definitions)(
-                self.inner.as_ptr(),
+                self.inner,
                 defs.ptr(),
                 defs.len(),
                 module_name.ptr(),
@@ -393,17 +390,12 @@ impl Checker {
             timeout_seconds: timeout.map_or(0.0, |duration| duration.as_secs_f64()),
             cancellation_token: options
                 .cancellation_token
-                .map_or(ptr::null_mut(), CancellationToken::raw),
+                .map_or(ffi::TokenHandle::null(), CancellationToken::raw),
         };
 
         // SAFETY: Input pointers and checker handle are valid for call duration.
         let raw = unsafe {
-            (self.api.luau_checker_check)(
-                self.inner.as_ptr(),
-                source.ptr(),
-                source.len(),
-                &raw_options,
-            )
+            (self.api.luau_checker_check)(self.inner, source.ptr(), source.len(), &raw_options)
         };
         let raw = RawCheckResultGuard::new(self.api, raw);
 
@@ -443,7 +435,7 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error
 impl Drop for Checker {
     fn drop(&mut self) {
         // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
-        unsafe { (self.api.luau_checker_free)(self.inner.as_ptr()) };
+        unsafe { (self.api.luau_checker_free)(self.inner) };
     }
 }
 
