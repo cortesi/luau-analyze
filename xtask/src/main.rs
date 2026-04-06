@@ -15,6 +15,8 @@ use luau_analyze::{CheckOptions, Checker, Severity};
 const DEFAULT_DEFINITIONS: &str = "examples/definitions/api.d.luau";
 /// Default scripts directory used by smoke checks.
 const DEFAULT_SCRIPTS_DIR: &str = "examples/scripts";
+/// Relative path from workspace root to the Luau submodule.
+const LUAU_SUBMODULE: &str = "crates/luau-analyze/luau";
 
 /// Top-level command-line arguments.
 #[derive(Debug, Parser)]
@@ -34,6 +36,8 @@ enum XtaskCommand {
     Test,
     /// Run example Luau smoke checks.
     Smoke(SmokeArgs),
+    /// Update the Luau submodule to the latest upstream tag.
+    LuauUpdate,
 }
 
 /// Arguments for `xtask smoke`.
@@ -100,6 +104,7 @@ fn main() -> ExitCode {
         XtaskCommand::Tidy => tidy(),
         XtaskCommand::Test => test(),
         XtaskCommand::Smoke(smoke) => smoke_check(&smoke),
+        XtaskCommand::LuauUpdate => luau_update(),
     };
 
     match result {
@@ -138,6 +143,51 @@ fn tidy() -> Result<(), String> {
 /// Runs the workspace tests through `cargo-nextest`.
 fn test() -> Result<(), String> {
     run_cargo(&["nextest", "run", "--all"])
+}
+
+/// Updates the Luau submodule to the latest upstream tag.
+fn luau_update() -> Result<(), String> {
+    let workspace = workspace_root();
+    let submodule = workspace.join(LUAU_SUBMODULE);
+    let colors = Colors::detect();
+
+    println!("{}", colors.paint("Fetching tags from upstream...", "1"));
+    run_git(&submodule, &["fetch", "--tags"])?;
+
+    let current = run_git(&submodule, &["describe", "--tags", "--exact-match", "HEAD"])
+        .unwrap_or_else(|_| "(unknown)".to_owned());
+    let all_tags = run_git(&submodule, &["tag"])?;
+    let latest = latest_luau_tag(&all_tags)?;
+
+    println!("  current: {}", colors.paint(&current, "33;1"));
+    println!("   latest: {}", colors.paint(&latest, "36;1"));
+
+    if current == latest {
+        println!("{}", colors.paint("Already up to date.", "32;1"));
+        return Ok(());
+    }
+
+    println!(
+        "\n{}",
+        colors.paint(format!("Checking out {latest}..."), "1")
+    );
+    run_git(&submodule, &["checkout", &latest])?;
+
+    println!("{}", colors.paint("Cleaning build artifacts...", "1"));
+    run_cargo(&["clean", "-p", "luau-analyze"])?;
+
+    println!("{}", colors.paint("Building...", "1"));
+    run_cargo(&["build", "-p", "luau-analyze"])?;
+
+    println!("{}", colors.paint("Running tests...", "1"));
+    run_cargo(&["nextest", "run", "--workspace"])?;
+
+    println!("\n{}", colors.paint("Update successful.", "32;1"));
+    println!("To commit:");
+    println!("  git add {LUAU_SUBMODULE}");
+    println!("  git commit -m \"chore: update Luau to {latest}\"");
+
+    Ok(())
 }
 
 /// Runs smoke checks for all bundled example scripts.
@@ -327,6 +377,36 @@ fn parse_expectation(source: &str) -> Expectation {
     Expectation::Pass
 }
 
+/// Runs a git command in the given directory and captures stdout.
+fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|error| format!("failed to run `git {}`: {error}", args.join(" ")))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("`git {}` failed: {}", args.join(" "), stderr.trim()))
+    }
+}
+
+/// Returns the highest `0.NNN` tag from a newline-separated tag list.
+fn latest_luau_tag(tag_output: &str) -> Result<String, String> {
+    tag_output
+        .lines()
+        .filter_map(|tag| {
+            tag.strip_prefix("0.")
+                .and_then(|n| n.parse::<u64>().ok())
+                .map(|n| (n, tag))
+        })
+        .max_by_key(|(n, _)| *n)
+        .map(|(_, tag)| tag.to_owned())
+        .ok_or_else(|| "no valid Luau tags (0.NNN) found".to_owned())
+}
+
 /// Executes `cargo` in the workspace root.
 fn run_cargo(args: &[&str]) -> Result<(), String> {
     let workspace_root = workspace_root();
@@ -363,7 +443,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{Expectation, collect_scripts_recursive, parse_expectation};
+    use super::{Expectation, collect_scripts_recursive, latest_luau_tag, parse_expectation};
 
     /// Verifies expectation parsing for pass markers.
     #[test]
@@ -377,6 +457,19 @@ mod tests {
     fn parse_expectation_fail_marker() {
         let source = "-- expect: fail\n--!strict\nlocal x: number = \"x\"\n";
         assert_eq!(Expectation::Fail, parse_expectation(source));
+    }
+
+    /// Verifies tag selection picks the highest `0.NNN` version.
+    #[test]
+    fn latest_luau_tag_picks_highest() {
+        let tags = "0.708\n0.710\n0.709\n696\n0.700\n";
+        assert_eq!("0.710", latest_luau_tag(tags).unwrap());
+    }
+
+    /// Verifies non-prefixed tags are rejected.
+    #[test]
+    fn latest_luau_tag_rejects_non_prefixed() {
+        assert!(latest_luau_tag("696\n").is_err());
     }
 
     /// Verifies recursive script discovery includes nested files.

@@ -1,172 +1,61 @@
 # luau-analyze
 
-Status: **Active** / **v0.1.0** (Public Release).
-
-`luau-analyze` provides in-process Luau static analysis from Rust using Luau's
-`Analysis` frontend and a small C shim.
-
-## What It Does
-
-- Creates reusable checkers in Rust
-- Loads host type definitions once
-- Checks Luau source in strict mode only
-- Returns structured diagnostics (errors and warnings)
-- Runs without spawning external CLI processes
+In-process Luau type checking for Rust. Wraps the Luau `Analysis` frontend via
+a C shim so you can load host definitions, check Luau source, and get
+structured diagnostics without spawning an external process.
 
 ## Usage
-
-Add `luau-analyze` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 luau-analyze = "0.1.0"
 ```
 
-Then use it in your Rust code:
-
 ```rust
 use luau_analyze::Checker;
 
-fn main() {
-    let mut checker = Checker::new().expect("checker should initialize");
-    
-    checker.add_definitions(r#"
-        declare function print(message: string): ()
-    "#).expect("definitions should load");
+let mut checker = Checker::new().expect("checker");
 
-    let result = checker.check(r#"
-        --!strict
-        print("Hello, world!")
-    "#).expect("check should complete");
+checker.add_definitions(r#"
+    declare function greet(name: string): string
+"#).expect("definitions");
 
-    if result.is_ok() {
-        println!("Type check passed!");
-    } else {
-        for error in result.errors() {
-            println!("Error at {}:{}: {}", error.line, error.col, error.message);
-        }
-    }
-}
+let result = checker.check(r#"
+    --!strict
+    local msg: string = greet("world")
+"#).expect("check");
+
+assert!(result.is_ok());
 ```
 
-## Build Prerequisites
+Checkers are reusable — load definitions once, then check many sources. Each
+check returns diagnostics with location, severity, and message.
 
-To build `luau-analyze`, you must have:
-- A C/C++ toolchain (e.g. `clang` or `gcc`) installed on your system.
-- `cmake` installed for configuring the Luau C++ build.
-- If you are building from a git checkout, you must initialize the Luau submodule: `git submodule update --init --recursive`. (This is automatically included when using the crate from crates.io).
-- Currently supported platforms: macOS and Linux. Windows is currently unsupported.
+## Building
 
-### macOS Native Toolchain
-
-On macOS, some native dependencies may be archived in deterministic mode during
-builds. Apple's system `ar` does not support GNU-style `-D`, which can produce
-warnings like:
-
-```text
-ar: illegal option -- D
-```
-
-`luau-analyze` works around this automatically when it builds its vendored Luau
-archives, so you should not need any extra configuration for this crate.
-
-If you still want to force LLVM binutils, or if another native dependency emits
-the same warning, you can point Cargo at `llvm-ar` explicitly:
-
-```sh
-brew install llvm
-export AR="$(brew --prefix llvm)/bin/llvm-ar"
-export CARGO_TARGET_AARCH64_APPLE_DARWIN_AR="$AR"
-```
-
-If you build for Intel macOS as well, set `CARGO_TARGET_X86_64_APPLE_DARWIN_AR`
-to the same path.
-
-## Troubleshooting
-
-- **Missing Luau sources:** If your build fails with "missing Luau sources", ensure you have initialized git submodules.
-- **Unsupported toolchain:** If the build fails during C++ compilation, ensure you are not on Windows/MSVC and that your C++ compiler supports C++17.
-- **`ar: illegal option -- D` on macOS:** `luau-analyze` suppresses this when
-  building its own vendored Luau archives. If you still see the warning, it is
-  likely coming from another native dependency in your build graph.
-- **Crate vs Git differences:** When using the crates.io package, the necessary Luau source files are bundled. When working on a local checkout, you must use the git submodule.
-
-## Realtime Policy
-
-`luau-analyze` intentionally exposes one checker policy:
-
-- Strict mode is always enabled
-- Solver mode is always `new`
-- Batch queue APIs are not exposed (single-check, realtime flow only)
-
-Use `checker_policy()` in Rust or `lan check --print-policy [--json]` to assert
-policy from tools/CI.
-
-## Workspace Layout
-
-- `crates/luau-analyze`: library crate
-- `crates/lan`: command-line checker utility
-- `examples/`: definitions and Luau scripts used by `xtask smoke` and tests
-
-## Quick Start
-
-Build and test:
+Requires a C++17 toolchain (`clang` or `gcc`). From a git checkout, initialize
+the Luau submodule first:
 
 ```bash
-cargo test --workspace
+git submodule update --init --recursive
 ```
 
-Run smoke checks:
+The crates.io package bundles the Luau sources, so no submodule step is needed
+when using the published crate.
 
-```bash
-cargo run -p xtask -- smoke
-```
+Supported platforms: macOS and Linux.
 
-Run one script:
+## Design
 
-```bash
-cargo run -p lan -- check -d examples/definitions/api.d.luau examples/scripts/01_ok_builder.luau
-```
+- Strict mode only, new solver only
+- Single-file checks (no cross-file `require` resolution)
+- Per-check timeout and cancellation via `CancellationToken`
+- No batch/queue workflows
 
-Print policy:
+## Luau
 
-```bash
-cargo run -p lan -- check --print-policy --json
-```
+Submodule pinned to tag `0.710` at `crates/luau-analyze/luau`.
 
-## Luau Pin
-
-- Submodule path: `crates/luau-analyze/luau`
-- Pinned tag for v0.1 target: `0.710`
-
-## Third-Party Licenses
-
-This project contains code from the [Luau](https://github.com/luau-lang/luau) programming language, which is licensed under the MIT License. Luau itself contains code from Lua 5.1, which is also licensed under the MIT License. Copies of these licenses can be found in the vendored submodule at `crates/luau-analyze/luau/LICENSE.txt` and `crates/luau-analyze/luau/lua_LICENSE.txt`.
-
-## Known Limitations
-
-- Checks are single-file. Cross-file `require(...)` resolution is intentionally
-  out of scope for now.
-- Timeout and cancellation are per-check controls for realtime interruption.
-- The crate does not expose legacy solver selection or queue-based workflows.
-
-## Migration Notes
-
-Recent additions for realtime control:
-
-- `CheckerOptions` for checker-wide defaults (module label, timeout)
-- `CheckOptions` for per-call timeout/module/cancellation token
-- `CancellationToken` for external interruption
-- `CheckResult::{timed_out,cancelled}` outcome flags
-- `Checker::add_definitions_with_name` and labeled checks for clearer origins
-
-Behavioral policy is fixed:
-
-- No option exists to select Luau old solver.
-- No option exists to use queued/batch module checking.
-
-## Documentation
-
-- [Luau update playbook](docs/luau-update-playbook.md)
-- [Compatibility and versioning policy](docs/compatibility.md)
-- [Release checklist](docs/release-checklist.md)
+Luau is licensed under the MIT License. Lua 5.1 code within Luau is also MIT
+licensed. See `crates/luau-analyze/luau/LICENSE.txt` and
+`crates/luau-analyze/luau/lua_LICENSE.txt`.
