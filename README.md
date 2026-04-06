@@ -54,8 +54,6 @@ Supported platforms: macOS and Linux.
 
 ## Luau
 
-Submodule pinned to tag `0.710` at `crates/luau-analyze/luau`.
-
 Luau is licensed under the MIT License. Lua 5.1 code within Luau is also MIT
 licensed. See `crates/luau-analyze/luau/LICENSE.txt` and
 `crates/luau-analyze/luau/lua_LICENSE.txt`.

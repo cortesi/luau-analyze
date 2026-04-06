@@ -58,12 +58,7 @@ fn main() {
     let config_sources = collect_cpp_sources(&luau_root.join("Config/src"));
     let analysis_sources = collect_cpp_sources(&luau_root.join("Analysis/src"));
 
-    build_cpp_library(
-        "luau_common",
-        &common_sources,
-        &[&common_include],
-        &base,
-    );
+    build_cpp_library("luau_common", &common_sources, &[&common_include], &base);
     build_cpp_library(
         "luau_ast",
         &ast_sources,

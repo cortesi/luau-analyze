@@ -126,7 +126,6 @@ impl CheckResult {
             .filter(|diagnostic| diagnostic.severity == severity)
             .collect()
     }
-
 }
 
 /// Stable checker policy values exposed by this crate.

@@ -389,7 +389,11 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("`git {}` failed: {}", args.join(" "), stderr.trim()))
+        Err(format!(
+            "`git {}` failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ))
     }
 }
 
