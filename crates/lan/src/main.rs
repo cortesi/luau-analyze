@@ -165,8 +165,8 @@ fn run_check(args: &CheckArgs) -> Result<ExitCode, String> {
             ok: result.is_ok(),
             solver: checker_policy().solver,
             strict_mode: checker_policy().strict_mode,
-            timed_out: result.timed_out(),
-            cancelled: result.cancelled(),
+            timed_out: result.timed_out,
+            cancelled: result.cancelled,
             diagnostics: diagnostics_to_json(&result),
         };
         print_json(&output)?;

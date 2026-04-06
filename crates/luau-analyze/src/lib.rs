@@ -127,15 +127,6 @@ impl CheckResult {
             .collect()
     }
 
-    /// Returns `true` when the check exceeded its configured time limit.
-    pub fn timed_out(&self) -> bool {
-        self.timed_out
-    }
-
-    /// Returns `true` when cancellation was requested for this check.
-    pub fn cancelled(&self) -> bool {
-        self.cancelled
-    }
 }
 
 /// Stable checker policy values exposed by this crate.

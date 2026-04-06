@@ -7,7 +7,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    slice::from_ref,
 };
 
 /// Entry point for the build script.
@@ -62,40 +61,36 @@ fn main() {
     build_cpp_library(
         "luau_common",
         &common_sources,
-        from_ref(&common_include),
+        &[&common_include],
         &base,
     );
     build_cpp_library(
         "luau_ast",
         &ast_sources,
-        &[ast_include.clone(), common_include.clone()],
+        &[&ast_include, &common_include],
         &base,
     );
     build_cpp_library(
         "luau_vm",
         &vm_sources,
-        &[vm_include.clone(), common_include.clone()],
+        &[&vm_include, &common_include],
         &base,
     );
     build_cpp_library(
         "luau_compiler",
         &compiler_sources,
-        &[
-            compiler_include.clone(),
-            ast_include.clone(),
-            common_include.clone(),
-        ],
+        &[&compiler_include, &ast_include, &common_include],
         &base,
     );
     build_cpp_library(
         "luau_config",
         &config_sources,
         &[
-            config_include.clone(),
-            vm_include.clone(),
-            compiler_include.clone(),
-            ast_include.clone(),
-            common_include.clone(),
+            &config_include,
+            &vm_include,
+            &compiler_include,
+            &ast_include,
+            &common_include,
         ],
         &base,
     );
@@ -103,12 +98,12 @@ fn main() {
         "luau_analysis",
         &analysis_sources,
         &[
-            analysis_include.clone(),
-            config_include.clone(),
-            vm_include.clone(),
-            compiler_include.clone(),
-            ast_include.clone(),
-            common_include.clone(),
+            &analysis_include,
+            &config_include,
+            &vm_include,
+            &compiler_include,
+            &ast_include,
+            &common_include,
         ],
         &base,
     );
@@ -116,12 +111,12 @@ fn main() {
         "luau_analyze_shim",
         &[PathBuf::from("shim/analyze_shim.cpp")],
         &[
-            analysis_include,
-            config_include,
-            vm_include,
-            compiler_include,
-            ast_include,
-            common_include,
+            &analysis_include,
+            &config_include,
+            &vm_include,
+            &compiler_include,
+            &ast_include,
+            &common_include,
         ],
         &base,
     );
@@ -141,7 +136,7 @@ fn main() {
 }
 
 /// Compiles a single static C++ library from source files and include roots.
-fn build_cpp_library(name: &str, sources: &[PathBuf], includes: &[PathBuf], base: &cc::Build) {
+fn build_cpp_library(name: &str, sources: &[PathBuf], includes: &[&PathBuf], base: &cc::Build) {
     if sources.is_empty() {
         panic!("no sources found for `{name}`");
     }

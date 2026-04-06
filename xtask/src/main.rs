@@ -213,10 +213,10 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
                 );
             }
 
-            if result.timed_out() {
+            if result.timed_out {
                 println!("  {}", colors.paint("timeout", "31"));
             }
-            if result.cancelled() {
+            if result.cancelled {
                 println!("  {}", colors.paint("cancelled", "33"));
             }
         }

@@ -39,8 +39,8 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.severity == Severity::Error)
         );
-        assert!(!result.timed_out());
-        assert!(!result.cancelled());
+        assert!(!result.timed_out);
+        assert!(!result.cancelled);
     }
 
     /// Verifies strict mode is enforced even without `--!strict`.
@@ -229,7 +229,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(result.timed_out(), "expected timeout marker");
+        assert!(result.timed_out, "expected timeout marker");
         assert!(!result.is_ok(), "timeout should fail check");
         assert!(
             result
@@ -257,7 +257,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(result.cancelled(), "expected cancelled marker");
+        assert!(result.cancelled, "expected cancelled marker");
         assert!(!result.is_ok(), "cancelled check should fail");
         assert!(
             result
