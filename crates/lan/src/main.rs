@@ -1,7 +1,6 @@
 //! Command-line utility for `luau-analyze` checks.
 
 use std::{
-    fs,
     io::{self, Read},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -123,22 +122,15 @@ fn run_check(args: &CheckArgs) -> Result<ExitCode, String> {
 
     let mut checker = Checker::new().map_err(|error| error.to_string())?;
     if args.default_definitions {
-        load_definitions_file(&mut checker, Path::new(DEFAULT_DEFINITIONS))?;
+        checker
+            .add_definitions_path(Path::new(DEFAULT_DEFINITIONS))
+            .map_err(|error| error.to_string())?;
     }
     for definitions in &args.definitions {
-        load_definitions_file(&mut checker, definitions)?;
+        checker
+            .add_definitions_path(definitions)
+            .map_err(|error| error.to_string())?;
     }
-
-    let source = match &args.file {
-        Some(path) => fs::read_to_string(path)
-            .map_err(|error| format!("failed to read `{}`: {error}", path.display()))?,
-        None => read_stdin()?,
-    };
-
-    let label = args
-        .file
-        .as_deref()
-        .map_or_else(|| "<stdin>".to_owned(), |path| path.display().to_string());
 
     let cancellation_token = if args.cancel_immediately {
         let token = CancellationToken::new().map_err(|error| error.to_string())?;
@@ -148,20 +140,41 @@ fn run_check(args: &CheckArgs) -> Result<ExitCode, String> {
         None
     };
 
-    let result = checker
-        .check_with_options(
-            &source,
-            CheckOptions {
-                timeout: args.timeout_ms.map(Duration::from_millis),
-                module_name: Some(label.as_str()),
-                cancellation_token: cancellation_token.as_ref(),
-            },
-        )
-        .map_err(|error| error.to_string())?;
+    let (label, result) = match &args.file {
+        Some(path) => {
+            let label = path.display().to_string();
+            let result = checker
+                .check_path_with_options(
+                    path,
+                    CheckOptions {
+                        timeout: args.timeout_ms.map(Duration::from_millis),
+                        module_name: None,
+                        cancellation_token: cancellation_token.as_ref(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            (label, result)
+        }
+        None => {
+            let source = read_stdin()?;
+            let label = "<stdin>".to_owned();
+            let result = checker
+                .check_with_options(
+                    &source,
+                    CheckOptions {
+                        timeout: args.timeout_ms.map(Duration::from_millis),
+                        module_name: Some(label.as_str()),
+                        cancellation_token: cancellation_token.as_ref(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            (label, result)
+        }
+    };
 
     if args.json {
         let output = JsonCheckOutput {
-            target: label.clone(),
+            target: label,
             ok: result.is_ok(),
             solver: checker_policy().solver,
             strict_mode: checker_policy().strict_mode,
@@ -206,16 +219,6 @@ fn print_policy(as_json: bool) -> Result<(), String> {
         println!("exposes_batch_queue={}", policy.exposes_batch_queue);
         Ok(())
     }
-}
-
-/// Loads one definitions file into a checker.
-fn load_definitions_file(checker: &mut Checker, path: &Path) -> Result<(), String> {
-    let definitions = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read definitions `{}`: {error}", path.display()))?;
-
-    checker
-        .add_definitions_with_name(&definitions, &path.display().to_string())
-        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Reads all bytes from stdin and decodes UTF-8 text.

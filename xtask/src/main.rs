@@ -197,7 +197,9 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
     let scripts_root = absolute_or_workspace(&workspace, &args.scripts_dir);
 
     let mut checker = Checker::new().map_err(|error| error.to_string())?;
-    load_definitions_file(&mut checker, &definitions_path)?;
+    checker
+        .add_definitions_path(&definitions_path)
+        .map_err(|error| error.to_string())?;
 
     let mut scripts = collect_scripts_recursive(&scripts_root)?;
     if scripts.is_empty() {
@@ -217,8 +219,8 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
         let expectation = parse_expectation(&source);
         let label = display_path(script, &workspace);
 
-        let result = checker.check_with_options(
-            &source,
+        let result = checker.check_path_with_options(
+            script,
             CheckOptions {
                 timeout: args.timeout_ms.map(Duration::from_millis),
                 module_name: Some(label.as_str()),
@@ -301,16 +303,6 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
         );
         Err(format!("{failed} smoke script(s) failed"))
     }
-}
-
-/// Loads one definitions file into a checker.
-fn load_definitions_file(checker: &mut Checker, path: &Path) -> Result<(), String> {
-    let definitions = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read definitions `{}`: {error}", path.display()))?;
-
-    checker
-        .add_definitions_with_name(&definitions, &path.display().to_string())
-        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Returns `path` as absolute, resolving relative paths against workspace root.

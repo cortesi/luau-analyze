@@ -30,8 +30,8 @@
 mod ffi;
 
 use std::{
-    cmp::Ordering, error::Error as StdError, fmt, marker::PhantomData, ptr, slice, sync::Arc,
-    time::Duration,
+    cmp::Ordering, error::Error as StdError, fmt, fs, marker::PhantomData, path::Path, ptr, slice,
+    sync::Arc, time::Duration,
 };
 
 /// Default module label for source checks.
@@ -169,6 +169,15 @@ pub enum Error {
     Definitions(String),
     /// Entrypoint schema extraction failed.
     EntrypointSchema(String),
+    /// Reading a UTF-8 text file failed before checking or loading definitions.
+    ReadFile {
+        /// Logical input category such as `"source"` or `"definitions"`.
+        kind: &'static str,
+        /// Display label for the file path.
+        path: String,
+        /// Human-readable I/O error message.
+        message: String,
+    },
     /// UTF-8 input is too large for the C ABI length type.
     InputTooLarge {
         /// Logical input category such as `"source"` or `"definitions"`.
@@ -194,6 +203,13 @@ impl fmt::Display for Error {
                     formatter,
                     "failed to extract Luau entrypoint schema: {message}"
                 )
+            }
+            Self::ReadFile {
+                kind,
+                path,
+                message,
+            } => {
+                write!(formatter, "failed to read {kind} `{path}`: {message}")
             }
             Self::InputTooLarge { kind, len } => {
                 write!(
@@ -356,6 +372,19 @@ impl Checker {
         )
     }
 
+    /// Loads Luau definitions from a UTF-8 text file using the path as module label.
+    pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), Error> {
+        let path_label = path_label(path);
+        let defs = read_utf8_path(path, "definitions")?;
+
+        match add_definitions_raw(self.api, self.inner, &defs, &path_label) {
+            Err(Error::Definitions(message)) => {
+                Err(Error::Definitions(format!("{path_label}: {message}")))
+            }
+            other => other,
+        }
+    }
+
     /// Loads Luau definition source with an explicit module label.
     pub fn add_definitions_with_name(
         &mut self,
@@ -368,6 +397,30 @@ impl Checker {
     /// Type-checks a Luau source module with default options.
     pub fn check(&mut self, source: &str) -> Result<CheckResult, Error> {
         self.check_with_options(source, CheckOptions::default())
+    }
+
+    /// Type-checks a Luau source file with default options and the path as module label.
+    pub fn check_path(&mut self, path: &Path) -> Result<CheckResult, Error> {
+        self.check_path_with_options(path, CheckOptions::default())
+    }
+
+    /// Type-checks a Luau source file with explicit per-call options.
+    pub fn check_path_with_options(
+        &mut self,
+        path: &Path,
+        options: CheckOptions<'_>,
+    ) -> Result<CheckResult, Error> {
+        let source = read_utf8_path(path, "source")?;
+        let path_label = path_label(path);
+
+        self.check_with_options(
+            &source,
+            CheckOptions {
+                timeout: options.timeout,
+                module_name: options.module_name.or(Some(path_label.as_str())),
+                cancellation_token: options.cancellation_token,
+            },
+        )
     }
 
     /// Type-checks a Luau source module with explicit per-call options.
@@ -465,6 +518,21 @@ fn add_definitions_raw(
         Some(message) => Err(Error::Definitions(message)),
         None => Ok(()),
     }
+}
+
+/// Reads a UTF-8 text file used as checker input.
+fn read_utf8_path(path: &Path, kind: &'static str) -> Result<String, Error> {
+    let path_label = path_label(path);
+    fs::read_to_string(path).map_err(|error| Error::ReadFile {
+        kind,
+        path: path_label,
+        message: error.to_string(),
+    })
+}
+
+/// Formats a path for diagnostics and module labels.
+fn path_label(path: &Path) -> String {
+    path.display().to_string()
 }
 
 /// Borrowed UTF-8 input prepared for a C ABI call.
@@ -671,8 +739,14 @@ fn diagnostic_sort_key(left: &Diagnostic, right: &Diagnostic) -> Ordering {
 /// Unit tests for public result helpers and policy defaults.
 #[cfg(test)]
 mod tests {
+    use std::{
+        env, fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::{
-        CheckResult, CheckerOptions, Diagnostic, Severity, checker_policy,
+        CheckResult, Checker, CheckerOptions, Diagnostic, Error, Severity, checker_policy,
         extract_entrypoint_schema,
     };
 
@@ -777,5 +851,64 @@ return main
                 .contains("script must use a direct `return function(...) ... end` entrypoint"),
             "{error}"
         );
+    }
+
+    /// Verifies path-based source checks surface readable file errors.
+    #[test]
+    fn check_path_reports_read_error() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let missing = temp_path("missing_source");
+
+        let error = checker
+            .check_path(&missing)
+            .expect_err("missing file should fail");
+        match error {
+            Error::ReadFile {
+                kind,
+                path,
+                message,
+            } => {
+                assert_eq!("source", kind);
+                assert_eq!(missing.display().to_string(), path);
+                assert!(
+                    !message.is_empty(),
+                    "read error message should not be empty"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// Verifies path-based definitions loading reads UTF-8 files and preserves labels.
+    #[test]
+    fn add_definitions_path_loads_file_contents() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let path = temp_path("definitions");
+        fs::write(&path, "declare function file_defined(): string\n")
+            .expect("definitions file should be written");
+
+        checker
+            .add_definitions_path(&path)
+            .expect("definitions path should load");
+        let result = checker
+            .check(
+                r#"
+            --!strict
+            local value: string = file_defined()
+            "#,
+            )
+            .expect("source should check");
+
+        fs::remove_file(&path).expect("temp file should be removed");
+        assert!(result.is_ok(), "path-loaded definitions should stay active");
+    }
+
+    /// Creates a unique temp file path for filesystem tests.
+    fn temp_path(stem: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        env::temp_dir().join(format!("luau-analyze-{stem}-{unique}.luau"))
     }
 }
