@@ -232,7 +232,7 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
         };
 
         let has_errors = result.as_ref().is_none_or(|r| !r.is_ok());
-        let has_warnings = result.as_ref().is_some_and(|r| !r.warnings().is_empty());
+        let has_warnings = result.as_ref().is_some_and(|result| result.has_warnings());
         let passed = match expectation {
             Expectation::Pass => !has_errors && (!args.fail_on_warnings || !has_warnings),
             Expectation::Fail => has_errors,

@@ -10,6 +10,9 @@ use std::{
     process::Command,
 };
 
+/// Vendored Luau components compiled into the native checker.
+const LUAU_COMPONENTS: [&str; 6] = ["Common", "Ast", "VM", "Compiler", "Config", "Analysis"];
+
 /// Entry point for the build script.
 fn main() {
     let luau_root = Path::new("luau");
@@ -24,12 +27,6 @@ fn main() {
     println!("cargo:rerun-if-changed=luau");
     println!("cargo:rerun-if-changed=shim/analyze_shim.cpp");
 
-    let common_include = luau_root.join("Common/include");
-    let ast_include = luau_root.join("Ast/include");
-    let compiler_include = luau_root.join("Compiler/include");
-    let vm_include = luau_root.join("VM/include");
-    let config_include = luau_root.join("Config/include");
-    let analysis_include = luau_root.join("Analysis/include");
     let target = env::var("TARGET").unwrap_or_default();
 
     let mut build = cc::Build::new();
@@ -37,16 +34,13 @@ fn main() {
         .cpp(true)
         .std("c++17")
         .warnings(false)
-        .include(&common_include)
-        .include(&ast_include)
-        .include(&compiler_include)
-        .include(&vm_include)
-        .include(&config_include)
-        .include(&analysis_include)
         .define("LUAI_MAXCSTACK", "1000000")
         .define("LUA_VECTOR_SIZE", "3")
         .define("LUA_API", "extern \"C\"")
         .define("LUACODE_API", "extern \"C\"");
+    for component in LUAU_COMPONENTS {
+        build.include(luau_root.join(component).join("include"));
+    }
 
     if cfg!(debug_assertions) {
         build.define("LUAU_ENABLE_ASSERT", None);
@@ -67,12 +61,10 @@ fn main() {
             );
     }
 
-    let mut sources = collect_cpp_sources(&luau_root.join("Common/src"));
-    sources.extend(collect_cpp_sources(&luau_root.join("Ast/src")));
-    sources.extend(collect_cpp_sources(&luau_root.join("VM/src")));
-    sources.extend(collect_cpp_sources(&luau_root.join("Compiler/src")));
-    sources.extend(collect_cpp_sources(&luau_root.join("Config/src")));
-    sources.extend(collect_cpp_sources(&luau_root.join("Analysis/src")));
+    let mut sources = Vec::new();
+    for component in LUAU_COMPONENTS {
+        sources.extend(collect_cpp_sources(&luau_root.join(component).join("src")));
+    }
     sources.push(PathBuf::from("shim/analyze_shim.cpp"));
 
     let compiler = build.get_compiler();
@@ -132,8 +124,13 @@ fn build_native_library(compiler: &cc::Tool, sources: &[PathBuf], output: &Path,
 fn collect_cpp_sources(dir: &Path) -> Vec<PathBuf> {
     let mut sources: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("failed to read `{}`: {error}", dir.display()))
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| {
+                    panic!("failed to read entry in `{}`: {error}", dir.display())
+                })
+                .path()
+        })
         .filter(|path| path.extension().is_some_and(|ext| ext == "cpp"))
         .collect();
     sources.sort();

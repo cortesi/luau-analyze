@@ -97,10 +97,17 @@ pub struct EntrypointSchema {
 impl CheckResult {
     /// Returns `true` when the result contains no errors.
     pub fn is_ok(&self) -> bool {
-        !self
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        !self.has_errors()
+    }
+
+    /// Returns `true` when the result contains one or more errors.
+    pub fn has_errors(&self) -> bool {
+        self.has_severity(Severity::Error)
+    }
+
+    /// Returns `true` when the result contains one or more warnings.
+    pub fn has_warnings(&self) -> bool {
+        self.has_severity(Severity::Warning)
     }
 
     /// Returns all error diagnostics.
@@ -119,6 +126,13 @@ impl CheckResult {
             .iter()
             .filter(|diagnostic| diagnostic.severity == severity)
             .collect()
+    }
+
+    /// Returns whether any diagnostic matches the requested severity.
+    fn has_severity(&self, severity: Severity) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == severity)
     }
 }
 
@@ -334,8 +348,12 @@ impl Checker {
 
     /// Loads Luau definition source using default module label.
     pub fn add_definitions(&mut self, defs: &str) -> Result<(), Error> {
-        let module_name = self.options.default_definitions_module_name.clone();
-        self.add_definitions_with_name(defs, &module_name)
+        add_definitions_raw(
+            self.api,
+            self.inner,
+            defs,
+            &self.options.default_definitions_module_name,
+        )
     }
 
     /// Loads Luau definition source with an explicit module label.
@@ -344,24 +362,7 @@ impl Checker {
         defs: &str,
         module_name: &str,
     ) -> Result<(), Error> {
-        let defs = FfiStr::new(defs, "definitions")?;
-        let module_name = FfiStr::new(module_name, "definition module name")?;
-
-        // SAFETY: Pointers are valid for call duration and checker handle is live.
-        let raw = RawStringGuard::new(self.api, unsafe {
-            (self.api.luau_checker_add_definitions)(
-                self.inner,
-                defs.ptr(),
-                defs.len(),
-                module_name.ptr(),
-                module_name.len(),
-            )
-        });
-
-        match raw.message() {
-            Some(message) => Err(Error::Definitions(message)),
-            None => Ok(()),
-        }
+        add_definitions_raw(self.api, self.inner, defs, module_name)
     }
 
     /// Type-checks a Luau source module with default options.
@@ -436,6 +437,33 @@ impl Drop for Checker {
     fn drop(&mut self) {
         // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
         unsafe { (self.api.luau_checker_free)(self.inner) };
+    }
+}
+
+/// Loads Luau definition source through the native checker with a chosen module label.
+fn add_definitions_raw(
+    api: &'static ffi::Api,
+    checker: ffi::CheckerHandle,
+    defs: &str,
+    module_name: &str,
+) -> Result<(), Error> {
+    let defs = FfiStr::new(defs, "definitions")?;
+    let module_name = FfiStr::new(module_name, "definition module name")?;
+
+    // SAFETY: Pointers are valid for call duration and checker handle is live.
+    let raw = RawStringGuard::new(api, unsafe {
+        (api.luau_checker_add_definitions)(
+            checker,
+            defs.ptr(),
+            defs.len(),
+            module_name.ptr(),
+            module_name.len(),
+        )
+    });
+
+    match raw.message() {
+        Some(message) => Err(Error::Definitions(message)),
+        None => Ok(()),
     }
 }
 

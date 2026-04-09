@@ -175,7 +175,7 @@ fn run_check(args: &CheckArgs) -> Result<ExitCode, String> {
     }
 
     let has_errors = !result.is_ok();
-    let has_warnings = !result.warnings().is_empty();
+    let has_warnings = result.has_warnings();
     if has_errors || (args.fail_on_warnings && has_warnings) {
         Ok(ExitCode::from(1))
     } else {

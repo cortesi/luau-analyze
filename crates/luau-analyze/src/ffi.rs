@@ -8,6 +8,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process,
+    ptr::null_mut,
     sync::OnceLock,
 };
 
@@ -117,7 +118,7 @@ pub struct LuauCheckOptions {
 /// Opaque checker handle returned by the native shim.
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-pub(crate) struct CheckerHandle(*mut c_void);
+pub struct CheckerHandle(*mut c_void);
 
 impl CheckerHandle {
     /// Returns whether the handle is null.
@@ -129,12 +130,12 @@ impl CheckerHandle {
 /// Opaque cancellation token handle returned by the native shim.
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
-pub(crate) struct TokenHandle(*mut c_void);
+pub struct TokenHandle(*mut c_void);
 
 impl TokenHandle {
     /// Returns a null token handle.
     pub(crate) const fn null() -> Self {
-        Self(std::ptr::null_mut())
+        Self(null_mut())
     }
 
     /// Returns whether the handle is null.
