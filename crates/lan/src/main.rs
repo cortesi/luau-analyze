@@ -8,9 +8,7 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
-use luau_analyze::{
-    CancellationToken, CheckOptions, CheckResult, Checker, Severity, checker_policy,
-};
+use luau_analyze::{CancellationToken, CheckOptions, CheckResult, Checker, checker_policy};
 use serde::Serialize;
 
 /// Default definitions file used by `--default-definitions`.
@@ -97,6 +95,15 @@ struct JsonCheckOutput {
     diagnostics: Vec<JsonDiagnostic>,
 }
 
+/// Fully executed check together with its display label.
+#[derive(Debug)]
+struct CheckExecution {
+    /// Human-readable source label.
+    label: String,
+    /// Completed check result.
+    result: CheckResult,
+}
+
 /// Entrypoint for the CLI binary.
 fn main() -> ExitCode {
     let args = CliArgs::parse();
@@ -120,80 +127,11 @@ fn run_check(args: &CheckArgs) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut checker = Checker::new().map_err(|error| error.to_string())?;
-    if args.default_definitions {
-        checker
-            .add_definitions_path(Path::new(DEFAULT_DEFINITIONS))
-            .map_err(|error| error.to_string())?;
-    }
-    for definitions in &args.definitions {
-        checker
-            .add_definitions_path(definitions)
-            .map_err(|error| error.to_string())?;
-    }
-
-    let cancellation_token = if args.cancel_immediately {
-        let token = CancellationToken::new().map_err(|error| error.to_string())?;
-        token.cancel();
-        Some(token)
-    } else {
-        None
-    };
-
-    let (label, result) = match &args.file {
-        Some(path) => {
-            let label = path.display().to_string();
-            let result = checker
-                .check_path_with_options(
-                    path,
-                    CheckOptions {
-                        timeout: args.timeout_ms.map(Duration::from_millis),
-                        module_name: None,
-                        cancellation_token: cancellation_token.as_ref(),
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-            (label, result)
-        }
-        None => {
-            let source = read_stdin()?;
-            let label = "<stdin>".to_owned();
-            let result = checker
-                .check_with_options(
-                    &source,
-                    CheckOptions {
-                        timeout: args.timeout_ms.map(Duration::from_millis),
-                        module_name: Some(label.as_str()),
-                        cancellation_token: cancellation_token.as_ref(),
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-            (label, result)
-        }
-    };
-
-    if args.json {
-        let output = JsonCheckOutput {
-            target: label,
-            ok: result.is_ok(),
-            solver: checker_policy().solver,
-            strict_mode: checker_policy().strict_mode,
-            timed_out: result.timed_out,
-            cancelled: result.cancelled,
-            diagnostics: diagnostics_to_json(&result),
-        };
-        print_json(&output)?;
-    } else {
-        print_diagnostics(&label, &result);
-    }
-
-    let has_errors = !result.is_ok();
-    let has_warnings = result.has_warnings();
-    if has_errors || (args.fail_on_warnings && has_warnings) {
-        Ok(ExitCode::from(1))
-    } else {
-        Ok(ExitCode::SUCCESS)
-    }
+    let mut checker = build_checker(args)?;
+    let cancellation_token = build_cancellation_token(args)?;
+    let execution = execute_check(args, &mut checker, cancellation_token.as_ref())?;
+    emit_check_output(args.json, &execution)?;
+    Ok(exit_code_for_check(args, &execution.result))
 }
 
 /// Prints fixed checker policy as text or JSON.
@@ -230,6 +168,124 @@ fn read_stdin() -> Result<String, String> {
     String::from_utf8(buffer).map_err(|error| format!("stdin is not valid UTF-8: {error}"))
 }
 
+/// Creates a checker and loads any requested definitions.
+fn build_checker(args: &CheckArgs) -> Result<Checker, String> {
+    let mut checker = Checker::new().map_err(|error| error.to_string())?;
+    load_requested_definitions(&mut checker, args)?;
+    Ok(checker)
+}
+
+/// Loads all definition files requested on the command line.
+fn load_requested_definitions(checker: &mut Checker, args: &CheckArgs) -> Result<(), String> {
+    if args.default_definitions {
+        checker
+            .add_definitions_path(Path::new(DEFAULT_DEFINITIONS))
+            .map_err(|error| error.to_string())?;
+    }
+    for definitions in &args.definitions {
+        checker
+            .add_definitions_path(definitions)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Builds a pre-cancelled token when requested by the user.
+fn build_cancellation_token(args: &CheckArgs) -> Result<Option<CancellationToken>, String> {
+    if !args.cancel_immediately {
+        return Ok(None);
+    }
+
+    let token = CancellationToken::new().map_err(|error| error.to_string())?;
+    token.cancel();
+    Ok(Some(token))
+}
+
+/// Executes the selected input target.
+fn execute_check(
+    args: &CheckArgs,
+    checker: &mut Checker,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<CheckExecution, String> {
+    match &args.file {
+        Some(path) => run_path_check(checker, path, args, cancellation_token),
+        None => run_stdin_check(checker, args, cancellation_token),
+    }
+}
+
+/// Executes a check against a file path.
+fn run_path_check(
+    checker: &mut Checker,
+    path: &Path,
+    args: &CheckArgs,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<CheckExecution, String> {
+    let label = path.display().to_string();
+    let result = checker
+        .check_path_with_options(path, build_check_options(args, None, cancellation_token))
+        .map_err(|error| error.to_string())?;
+    Ok(CheckExecution { label, result })
+}
+
+/// Executes a check against UTF-8 source read from stdin.
+fn run_stdin_check(
+    checker: &mut Checker,
+    args: &CheckArgs,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<CheckExecution, String> {
+    let source = read_stdin()?;
+    let label = "<stdin>".to_owned();
+    let result = checker
+        .check_with_options(
+            &source,
+            build_check_options(args, Some(label.as_str()), cancellation_token),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(CheckExecution { label, result })
+}
+
+/// Builds per-check options from CLI flags.
+fn build_check_options<'a>(
+    args: &CheckArgs,
+    module_name: Option<&'a str>,
+    cancellation_token: Option<&'a CancellationToken>,
+) -> CheckOptions<'a> {
+    CheckOptions {
+        timeout: args.timeout_ms.map(Duration::from_millis),
+        module_name,
+        cancellation_token,
+    }
+}
+
+/// Writes check results in the selected output format.
+fn emit_check_output(as_json: bool, execution: &CheckExecution) -> Result<(), String> {
+    if as_json {
+        let policy = checker_policy();
+        let output = JsonCheckOutput {
+            target: execution.label.clone(),
+            ok: execution.result.is_ok(),
+            solver: policy.solver,
+            strict_mode: policy.strict_mode,
+            timed_out: execution.result.timed_out,
+            cancelled: execution.result.cancelled,
+            diagnostics: diagnostics_to_json(&execution.result),
+        };
+        print_json(&output)
+    } else {
+        print_diagnostics(&execution.label, &execution.result);
+        Ok(())
+    }
+}
+
+/// Computes the CLI exit code from a completed check result.
+fn exit_code_for_check(args: &CheckArgs, result: &CheckResult) -> ExitCode {
+    if result.has_errors() || (args.fail_on_warnings && result.has_warnings()) {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 /// Converts diagnostics to JSON rows.
 fn diagnostics_to_json(result: &CheckResult) -> Vec<JsonDiagnostic> {
     result
@@ -240,10 +296,7 @@ fn diagnostics_to_json(result: &CheckResult) -> Vec<JsonDiagnostic> {
             col: diagnostic.col + 1,
             end_line: diagnostic.end_line + 1,
             end_col: diagnostic.end_col + 1,
-            severity: match diagnostic.severity {
-                Severity::Error => "error",
-                Severity::Warning => "warning",
-            },
+            severity: diagnostic.severity.as_str(),
             message: diagnostic.message.clone(),
         })
         .collect()
@@ -252,15 +305,12 @@ fn diagnostics_to_json(result: &CheckResult) -> Vec<JsonDiagnostic> {
 /// Prints diagnostics in a simple `file:line:col` format.
 fn print_diagnostics(label: &str, result: &CheckResult) {
     for diagnostic in &result.diagnostics {
-        let severity = match diagnostic.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-        };
         println!(
             "{label}:{}:{}: {severity}: {}",
             diagnostic.line + 1,
             diagnostic.col + 1,
-            diagnostic.message
+            diagnostic.message,
+            severity = diagnostic.severity.as_str(),
         );
     }
 }

@@ -136,6 +136,24 @@ impl CheckResult {
     }
 }
 
+impl Severity {
+    /// Returns the severity as a stable lowercase string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+
+    /// Converts the shim severity code into the public enum.
+    fn from_ffi(code: u32) -> Self {
+        match code {
+            0 => Self::Error,
+            _ => Self::Warning,
+        }
+    }
+}
+
 /// Stable checker policy values exposed by this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckerPolicy {
@@ -253,6 +271,17 @@ pub struct CheckOptions<'a> {
     pub module_name: Option<&'a str>,
     /// Optional cancellation token for this call.
     pub cancellation_token: Option<&'a CancellationToken>,
+}
+
+impl<'a> CheckOptions<'a> {
+    /// Supplies a module name only when the caller did not provide one already.
+    fn with_fallback_module_name(self, module_name: &'a str) -> Self {
+        Self {
+            timeout: self.timeout,
+            module_name: self.module_name.or(Some(module_name)),
+            cancellation_token: self.cancellation_token,
+        }
+    }
 }
 
 /// A reusable cancellation token that can be signaled from another thread.
@@ -374,15 +403,11 @@ impl Checker {
 
     /// Loads Luau definitions from a UTF-8 text file using the path as module label.
     pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), Error> {
-        let path_label = path_label(path);
-        let defs = read_utf8_path(path, "definitions")?;
-
-        match add_definitions_raw(self.api, self.inner, &defs, &path_label) {
-            Err(Error::Definitions(message)) => {
-                Err(Error::Definitions(format!("{path_label}: {message}")))
-            }
-            other => other,
-        }
+        let defs = LoadedInput::read(path, "definitions")?;
+        prefix_definitions_error(
+            &defs.label,
+            add_definitions_raw(self.api, self.inner, &defs.contents, &defs.label),
+        )
     }
 
     /// Loads Luau definition source with an explicit module label.
@@ -410,16 +435,10 @@ impl Checker {
         path: &Path,
         options: CheckOptions<'_>,
     ) -> Result<CheckResult, Error> {
-        let source = read_utf8_path(path, "source")?;
-        let path_label = path_label(path);
-
+        let source = LoadedInput::read(path, "source")?;
         self.check_with_options(
-            &source,
-            CheckOptions {
-                timeout: options.timeout,
-                module_name: options.module_name.or(Some(path_label.as_str())),
-                cancellation_token: options.cancellation_token,
-            },
+            &source.contents,
+            options.with_fallback_module_name(source.label.as_str()),
         )
     }
 
@@ -430,22 +449,8 @@ impl Checker {
         options: CheckOptions<'_>,
     ) -> Result<CheckResult, Error> {
         let source = FfiStr::new(source, "source")?;
-
-        let module_name = options
-            .module_name
-            .unwrap_or(self.options.default_module_name.as_str());
-        let module_name = FfiStr::new(module_name, "module name")?;
-
-        let timeout = options.timeout.or(self.options.default_timeout);
-        let raw_options = ffi::LuauCheckOptions {
-            module_name: module_name.ptr(),
-            module_name_len: module_name.len(),
-            has_timeout: u32::from(timeout.is_some()),
-            timeout_seconds: timeout.map_or(0.0, |duration| duration.as_secs_f64()),
-            cancellation_token: options
-                .cancellation_token
-                .map_or(ffi::TokenHandle::null(), CancellationToken::raw),
-        };
+        let options = ResolvedCheckOptions::new(options, &self.options)?;
+        let raw_options = options.as_ffi();
 
         // SAFETY: Input pointers and checker handle are valid for call duration.
         let raw = unsafe {
@@ -520,19 +525,30 @@ fn add_definitions_raw(
     }
 }
 
-/// Reads a UTF-8 text file used as checker input.
-fn read_utf8_path(path: &Path, kind: &'static str) -> Result<String, Error> {
-    let path_label = path_label(path);
-    fs::read_to_string(path).map_err(|error| Error::ReadFile {
-        kind,
-        path: path_label,
-        message: error.to_string(),
-    })
-}
-
 /// Formats a path for diagnostics and module labels.
 fn path_label(path: &Path) -> String {
     path.display().to_string()
+}
+
+/// UTF-8 checker input loaded from disk together with its display label.
+struct LoadedInput {
+    /// Display label used for diagnostics and module names.
+    label: String,
+    /// UTF-8 contents loaded from disk.
+    contents: String,
+}
+
+impl LoadedInput {
+    /// Reads one UTF-8 file used as checker input.
+    fn read(path: &Path, kind: &'static str) -> Result<Self, Error> {
+        let label = path_label(path);
+        let contents = fs::read_to_string(path).map_err(|error| Error::ReadFile {
+            kind,
+            path: label.clone(),
+            message: error.to_string(),
+        })?;
+        Ok(Self { label, contents })
+    }
 }
 
 /// Borrowed UTF-8 input prepared for a C ABI call.
@@ -573,6 +589,45 @@ impl<'a> FfiStr<'a> {
     /// Returns the UTF-8 byte length for the C ABI.
     fn len(self) -> u32 {
         self.len
+    }
+}
+
+/// Check options after merging checker defaults and converting FFI handles.
+struct ResolvedCheckOptions<'a> {
+    /// Module label prepared for the C ABI.
+    module_name: FfiStr<'a>,
+    /// Timeout value after falling back to checker defaults.
+    timeout: Option<Duration>,
+    /// Raw cancellation token handle, or null when disabled.
+    cancellation_token: ffi::TokenHandle,
+}
+
+impl<'a> ResolvedCheckOptions<'a> {
+    /// Merges per-call options with checker defaults.
+    fn new(options: CheckOptions<'a>, defaults: &'a CheckerOptions) -> Result<Self, Error> {
+        Ok(Self {
+            module_name: FfiStr::new(
+                options
+                    .module_name
+                    .unwrap_or(defaults.default_module_name.as_str()),
+                "module name",
+            )?,
+            timeout: options.timeout.or(defaults.default_timeout),
+            cancellation_token: options
+                .cancellation_token
+                .map_or(ffi::TokenHandle::null(), CancellationToken::raw),
+        })
+    }
+
+    /// Converts resolved options into the raw ABI form expected by the shim.
+    fn as_ffi(&self) -> ffi::LuauCheckOptions {
+        ffi::LuauCheckOptions {
+            module_name: self.module_name.ptr(),
+            module_name_len: self.module_name.len(),
+            has_timeout: u32::from(self.timeout.is_some()),
+            timeout_seconds: self.timeout.map_or(0.0, |duration| duration.as_secs_f64()),
+            cancellation_token: self.cancellation_token,
+        }
     }
 }
 
@@ -666,6 +721,14 @@ fn native_api() -> Result<&'static ffi::Api, Error> {
     ffi::api().map_err(Error::NativeLibrary)
 }
 
+/// Adds the file label to definitions failures produced by the native layer.
+fn prefix_definitions_error(label: &str, result: Result<(), Error>) -> Result<(), Error> {
+    match result {
+        Err(Error::Definitions(message)) => Err(Error::Definitions(format!("{label}: {message}"))),
+        other => other,
+    }
+}
+
 /// Converts raw UTF-8 bytes from C into a Rust `String`.
 fn string_from_raw(ptr: *const u8, len: u32) -> String {
     if ptr.is_null() || len == 0 {
@@ -675,16 +738,6 @@ fn string_from_raw(ptr: *const u8, len: u32) -> String {
     // SAFETY: `ptr` points to `len` bytes provided by the shim for this call scope.
     let bytes = unsafe { slice::from_raw_parts(ptr, len as usize) };
     String::from_utf8_lossy(bytes).into_owned()
-}
-
-impl Severity {
-    /// Converts the shim severity code into the public enum.
-    fn from_ffi(code: u32) -> Self {
-        match code {
-            0 => Self::Error,
-            _ => Self::Warning,
-        }
-    }
 }
 
 /// Converts diagnostic rows owned by the shim into Rust values.

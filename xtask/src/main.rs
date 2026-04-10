@@ -219,8 +219,8 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
         let expectation = parse_expectation(&source);
         let label = display_path(script, &workspace);
 
-        let result = checker.check_path_with_options(
-            script,
+        let result = checker.check_with_options(
+            &source,
             CheckOptions {
                 timeout: args.timeout_ms.map(Duration::from_millis),
                 module_name: Some(label.as_str()),
