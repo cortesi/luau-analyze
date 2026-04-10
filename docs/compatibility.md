@@ -40,8 +40,11 @@ Windows is currently unsupported.
 
 ## Current Functional Limits
 
-- Realtime checks are single-file and immediate. Cross-file `require` resolution
-  is a known limitation until multi-file support is intentionally added.
+- In-memory `check(...)` calls only resolve `require(...)` for host-provided
+  virtual modules. Relative filesystem `require(...)` needs `check_path(...)`
+  or an explicit filesystem-backed module label.
+- Module resolution follows the vendored Luau CLI resolver path for filesystem
+  modules and an exact-name host map for virtual modules.
 - Definition files can be loaded multiple times and are merged into the checker
   globals; errors include the caller-provided definition label.
 

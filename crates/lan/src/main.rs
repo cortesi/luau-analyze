@@ -254,6 +254,7 @@ fn build_check_options<'a>(
         timeout: args.timeout_ms.map(Duration::from_millis),
         module_name,
         cancellation_token,
+        ..CheckOptions::default()
     }
 }
 

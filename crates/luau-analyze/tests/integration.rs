@@ -8,7 +8,7 @@ mod tests {
         time::Duration,
     };
 
-    use luau_analyze::{CancellationToken, CheckOptions, Checker, Severity};
+    use luau_analyze::{CancellationToken, CheckOptions, Checker, Severity, VirtualModule};
     use mlua::Lua;
 
     /// Expected result marker parsed from script header comments.
@@ -292,6 +292,7 @@ mod tests {
                     timeout: Some(Duration::ZERO),
                     module_name: Some("custom/module_timeout.luau"),
                     cancellation_token: None,
+                    virtual_modules: &[],
                 },
             )
             .unwrap();
@@ -320,6 +321,7 @@ mod tests {
                     timeout: None,
                     module_name: Some("cancelled.luau"),
                     cancellation_token: Some(&token),
+                    virtual_modules: &[],
                 },
             )
             .unwrap();
@@ -334,9 +336,9 @@ mod tests {
         );
     }
 
-    /// Verifies cross-file `require` is currently unsupported in checker mode.
+    /// Verifies bare source checks still need a filesystem root for relative requires.
     #[test]
-    fn single_file_require_is_not_supported() {
+    fn plain_source_check_without_filesystem_context_cannot_resolve_relative_require() {
         let mut checker = Checker::new().expect("checker creation should succeed");
         let result = checker
             .check(
@@ -350,7 +352,96 @@ mod tests {
 
         assert!(
             !result.is_ok(),
-            "expected unresolved module diagnostic for single-file checker"
+            "expected unresolved module diagnostic without a filesystem root"
+        );
+    }
+
+    /// Verifies `check_path` resolves adjacent filesystem modules.
+    #[test]
+    fn check_path_resolves_relative_filesystem_require() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let result = checker
+            .check_path(&module_fixture("filesystem/requirer.luau"))
+            .expect("filesystem graph should check");
+
+        assert!(
+            result.is_ok(),
+            "filesystem require should resolve: {result:#?}"
+        );
+    }
+
+    /// Verifies virtual modules can satisfy bare string `require(...)`.
+    #[test]
+    fn check_with_virtual_module_resolves_require() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let term = VirtualModule {
+            name: "term",
+            source: r#"
+                export type Term = {
+                    cols: number,
+                }
+
+                export type TermModule = {
+                    current: () -> Term,
+                }
+
+                local module: TermModule = nil :: any
+                return module
+            "#,
+        };
+        let result = checker
+            .check_with_options(
+                r#"
+                    --!strict
+                    local term = require("term")
+                    local _: number = term.current().cols
+                "#,
+                CheckOptions {
+                    module_name: Some("virtual_root.luau"),
+                    virtual_modules: &[term],
+                    ..CheckOptions::default()
+                },
+            )
+            .expect("virtual module graph should check");
+
+        assert!(
+            result.is_ok(),
+            "virtual require should resolve: {result:#?}"
+        );
+    }
+
+    /// Verifies one graph can mix filesystem and virtual require resolution.
+    #[test]
+    fn check_path_supports_mixed_filesystem_and_virtual_requires() {
+        let mut checker = Checker::new().expect("checker creation should succeed");
+        let term = VirtualModule {
+            name: "term",
+            source: r#"
+                export type Term = {
+                    cols: number,
+                }
+
+                export type TermModule = {
+                    current: () -> Term,
+                }
+
+                local module: TermModule = nil :: any
+                return module
+            "#,
+        };
+        let result = checker
+            .check_path_with_options(
+                &module_fixture("mixed/requirer.luau"),
+                CheckOptions {
+                    virtual_modules: &[term],
+                    ..CheckOptions::default()
+                },
+            )
+            .expect("mixed graph should check");
+
+        assert!(
+            result.is_ok(),
+            "mixed require graph should resolve: {result:#?}"
         );
     }
 
@@ -493,6 +584,19 @@ mod tests {
             root.display()
         );
         root
+    }
+
+    /// Returns one checked-in module fixture path.
+    fn module_fixture(relative_path: &str) -> PathBuf {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/modules")
+            .join(relative_path);
+        assert!(
+            path.exists(),
+            "module fixture should exist at `{}`",
+            path.display()
+        );
+        path
     }
 
     /// Parses the script expectation marker from leading comments.

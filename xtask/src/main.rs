@@ -225,6 +225,7 @@ fn smoke_check(args: &SmokeArgs) -> Result<(), String> {
                 timeout: args.timeout_ms.map(Duration::from_millis),
                 module_name: Some(label.as_str()),
                 cancellation_token: None,
+                ..CheckOptions::default()
             },
         );
 

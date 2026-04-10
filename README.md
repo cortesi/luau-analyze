@@ -28,8 +28,13 @@ let result = checker.check(r#"
 assert!(result.is_ok());
 ```
 
-Checkers are reusable — load definitions once, then check many sources. Each
+Checkers are reusable. Load definitions once, then check many sources. Each
 check returns diagnostics with location, severity, and message.
+
+For filesystem-backed code, prefer `check_path(...)` so relative
+`require(...)` calls resolve from the actual file path. Hosts that expose
+in-memory modules can also provide per-check virtual modules through
+`CheckOptions::virtual_modules`.
 
 ## Building
 
@@ -48,7 +53,8 @@ Supported platforms: macOS and Linux.
 ## Design
 
 - Strict mode only, new solver only
-- Single-file checks (no cross-file `require` resolution)
+- Filesystem `require(...)` resolution through `check_path(...)`
+- Host-provided virtual modules through `CheckOptions::virtual_modules`
 - Per-check timeout and cancellation via `CancellationToken`
 - No batch/queue workflows
 

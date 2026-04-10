@@ -113,6 +113,24 @@ pub struct LuauCheckOptions {
     pub(crate) timeout_seconds: f64,
     /// Optional cancellation token handle.
     pub(crate) cancellation_token: TokenHandle,
+    /// Optional virtual modules visible to this check.
+    pub(crate) virtual_modules: *const LuauVirtualModule,
+    /// Number of virtual modules in `virtual_modules`.
+    pub(crate) virtual_module_count: u32,
+}
+
+/// C ABI virtual module entry passed into one checker invocation.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct LuauVirtualModule {
+    /// Pointer to the virtual module name bytes.
+    pub(crate) name: *const u8,
+    /// Length of `name`.
+    pub(crate) name_len: u32,
+    /// Pointer to the virtual module source bytes.
+    pub(crate) source: *const u8,
+    /// Length of `source`.
+    pub(crate) source_len: u32,
 }
 
 /// Opaque checker handle returned by the native shim.

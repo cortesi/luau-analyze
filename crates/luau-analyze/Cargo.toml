@@ -34,6 +34,12 @@ include = [
     "/luau/Config/src/**/*",
     "/luau/Analysis/include/**/*",
     "/luau/Analysis/src/**/*",
+    "/luau/Require/include/**/*",
+    "/luau/Require/src/**/*",
+    "/luau/CLI/include/**/*",
+    "/luau/CLI/src/AnalyzeRequirer.cpp",
+    "/luau/CLI/src/FileUtils.cpp",
+    "/luau/CLI/src/VfsNavigator.cpp",
 ]
 
 [lints]

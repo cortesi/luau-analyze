@@ -11,7 +11,9 @@ use std::{
 };
 
 /// Vendored Luau components compiled into the native checker.
-const LUAU_COMPONENTS: [&str; 6] = ["Common", "Ast", "VM", "Compiler", "Config", "Analysis"];
+const LUAU_COMPONENTS: [&str; 7] = [
+    "Common", "Ast", "VM", "Compiler", "Config", "Analysis", "Require",
+];
 
 /// Entry point for the build script.
 fn main() {
@@ -26,6 +28,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=luau");
     println!("cargo:rerun-if-changed=shim/analyze_shim.cpp");
+    println!("cargo:rerun-if-changed=luau/CLI");
 
     let target = env::var("TARGET").unwrap_or_default();
 
@@ -41,6 +44,7 @@ fn main() {
     for component in LUAU_COMPONENTS {
         build.include(luau_root.join(component).join("include"));
     }
+    build.include(luau_root.join("CLI").join("include"));
 
     if cfg!(debug_assertions) {
         build.define("LUAU_ENABLE_ASSERT", None);
@@ -64,6 +68,13 @@ fn main() {
     let mut sources = Vec::new();
     for component in LUAU_COMPONENTS {
         sources.extend(collect_cpp_sources(&luau_root.join(component).join("src")));
+    }
+    for source in [
+        luau_root.join("CLI/src/AnalyzeRequirer.cpp"),
+        luau_root.join("CLI/src/FileUtils.cpp"),
+        luau_root.join("CLI/src/VfsNavigator.cpp"),
+    ] {
+        sources.push(source);
     }
     sources.push(PathBuf::from("shim/analyze_shim.cpp"));
 

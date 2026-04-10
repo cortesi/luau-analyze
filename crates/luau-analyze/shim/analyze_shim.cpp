@@ -1,11 +1,15 @@
+#include "Luau/AnalyzeRequirer.h"
 #include "Luau/Ast.h"
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Config.h"
 #include "Luau/ConfigResolver.h"
 #include "Luau/Error.h"
+#include "Luau/FileUtils.h"
 #include "Luau/FileResolver.h"
 #include "Luau/Frontend.h"
 #include "Luau/Parser.h"
+#include "Luau/TimeTrace.h"
+#include "lua.h"
 
 #include <algorithm>
 #include <cctype>
@@ -70,6 +74,7 @@ struct LuauString
 };
 
 typedef struct LuauCancellationToken LuauCancellationToken;
+struct LuauVirtualModule;
 
 struct LuauCheckOptions
 {
@@ -78,9 +83,19 @@ struct LuauCheckOptions
     uint32_t has_timeout;
     double timeout_seconds;
     LuauCancellationToken* cancellation_token;
+    const LuauVirtualModule* virtual_modules;
+    uint32_t virtual_module_count;
 };
 
 typedef struct LuauChecker LuauChecker;
+
+struct LuauVirtualModule
+{
+    const char* name;
+    uint32_t name_len;
+    const char* source;
+    uint32_t source_len;
+};
 
 LUAU_ANALYZE_EXPORT LuauChecker* luau_checker_new(void);
 LUAU_ANALYZE_EXPORT void luau_checker_free(LuauChecker* checker);
@@ -121,24 +136,59 @@ uint32_t as_u32(size_t value)
     return value > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(value);
 }
 
-struct InMemoryFileResolver : Luau::FileResolver
+struct LuauConfigInterruptInfo
 {
-    std::unordered_map<Luau::ModuleName, std::string> sources;
+    Luau::TypeCheckLimits limits;
+    std::string module;
+};
+
+struct GraphFileResolver : Luau::FileResolver
+{
+    std::unordered_map<Luau::ModuleName, std::string> rootSources;
+    std::unordered_map<Luau::ModuleName, std::string> virtualSources;
+
+    void reset()
+    {
+        rootSources.clear();
+        virtualSources.clear();
+    }
+
+    void setRootSource(const Luau::ModuleName& name, std::string source)
+    {
+        rootSources[name] = std::move(source);
+    }
+
+    void addVirtualSource(const Luau::ModuleName& name, std::string source)
+    {
+        virtualSources[name] = std::move(source);
+    }
 
     std::optional<Luau::SourceCode> readSource(const Luau::ModuleName& name) override
     {
-        auto iterator = sources.find(name);
-        if (iterator == sources.end())
-            return std::nullopt;
-        return Luau::SourceCode{iterator->second, Luau::SourceCode::Module};
+        if (auto iterator = rootSources.find(name); iterator != rootSources.end())
+            return Luau::SourceCode{iterator->second, Luau::SourceCode::Module};
+        if (auto iterator = virtualSources.find(name); iterator != virtualSources.end())
+            return Luau::SourceCode{iterator->second, Luau::SourceCode::Module};
+        if (auto source = readFile(name))
+            return Luau::SourceCode{*source, Luau::SourceCode::Module};
+        return std::nullopt;
     }
 
-    std::optional<Luau::ModuleInfo> resolveModule(const Luau::ModuleInfo*, Luau::AstExpr* expr, const Luau::TypeCheckLimits&) override
+    std::optional<Luau::ModuleInfo> resolveModule(
+        const Luau::ModuleInfo* context,
+        Luau::AstExpr* expr,
+        const Luau::TypeCheckLimits& limits
+    ) override
     {
         if (const auto* global = expr->as<Luau::AstExprGlobal>())
-            return Luau::ModuleInfo{global->name.value};
+            return resolveNamedModule(global->name.value);
         if (const auto* string = expr->as<Luau::AstExprConstantString>())
-            return Luau::ModuleInfo{std::string(string->value.data, string->value.size)};
+        {
+            std::string path(string->value.data, string->value.size);
+            if (auto module = resolveNamedModule(path))
+                return module;
+            return resolveFilesystemModule(context, std::move(path), limits);
+        }
         return std::nullopt;
     }
 
@@ -149,6 +199,49 @@ struct InMemoryFileResolver : Luau::FileResolver
 
     std::optional<std::string> getEnvironmentForModule(const Luau::ModuleName&) const override
     {
+        return std::nullopt;
+    }
+
+private:
+    std::optional<Luau::ModuleInfo> resolveNamedModule(const std::string& name) const
+    {
+        if (virtualSources.find(name) != virtualSources.end() || rootSources.find(name) != rootSources.end())
+            return Luau::ModuleInfo{name};
+        return std::nullopt;
+    }
+
+    std::optional<Luau::ModuleInfo> resolveFilesystemModule(
+        const Luau::ModuleInfo* context,
+        std::string path,
+        const Luau::TypeCheckLimits& limits
+    ) const
+    {
+        if (context == nullptr)
+            return std::nullopt;
+
+        FileNavigationContext navigationContext{context->name};
+        LuauConfigInterruptInfo info{limits, path};
+        navigationContext.luauConfigInit = [&info](lua_State* L)
+        {
+            lua_setthreaddata(L, &info);
+        };
+        navigationContext.luauConfigInterrupt = [](lua_State* L, int gc)
+        {
+            LuauConfigInterruptInfo* info = static_cast<LuauConfigInterruptInfo*>(lua_getthreaddata(L));
+            if (info->limits.finishTime && Luau::TimeTrace::getClock() > *info->limits.finishTime)
+                throw Luau::TimeLimitError{info->module};
+            if (info->limits.cancellationToken && info->limits.cancellationToken->requested())
+                throw Luau::UserCancelError{info->module};
+        };
+
+        Luau::Require::ErrorHandler nullErrorHandler{};
+        Luau::Require::Navigator navigator(navigationContext, nullErrorHandler);
+        if (navigator.navigate(std::move(path)) != Luau::Require::Navigator::Status::Success)
+            return std::nullopt;
+        if (!navigationContext.isModulePresent())
+            return std::nullopt;
+        if (std::optional<std::string> identifier = navigationContext.getIdentifier())
+            return Luau::ModuleInfo{*identifier};
         return std::nullopt;
     }
 };
@@ -203,7 +296,7 @@ struct EntrypointSchemaStorage
 
 struct CheckerImpl
 {
-    InMemoryFileResolver fileResolver;
+    GraphFileResolver fileResolver;
     StrictConfigResolver configResolver;
     Luau::FrontendOptions frontendOptions;
     std::unique_ptr<Luau::Frontend> frontend;
@@ -473,6 +566,19 @@ std::string fallback_label(const std::string& value, const char* fallback)
     return value.empty() ? std::string(fallback) : value;
 }
 
+void populate_virtual_modules(GraphFileResolver& fileResolver, const LuauCheckOptions* options)
+{
+    if (options == nullptr || options->virtual_modules == nullptr || options->virtual_module_count == 0)
+        return;
+
+    for (uint32_t index = 0; index < options->virtual_module_count; ++index)
+    {
+        const LuauVirtualModule& module = options->virtual_modules[index];
+        const std::string moduleName = to_owned_string(module.name, module.name_len);
+        fileResolver.addVirtualSource(moduleName, to_owned_string(module.source, module.source_len));
+    }
+}
+
 std::string definitions_error_message(const Luau::LoadDefinitionFileResult& result, const std::string& moduleName)
 {
     std::string message;
@@ -681,8 +787,12 @@ extern "C" LuauCheckResult luau_checker_check(
         }
 
         checker->impl->frontend->clear();
-        checker->impl->fileResolver.sources.clear();
-        checker->impl->fileResolver.sources[moduleName] = source == nullptr ? std::string() : std::string(source, source_len);
+        checker->impl->fileResolver.reset();
+        checker->impl->fileResolver.setRootSource(
+            moduleName,
+            source == nullptr ? std::string() : std::string(source, source_len)
+        );
+        populate_virtual_modules(checker->impl->fileResolver, options);
 
         Luau::CheckResult checkResult = checker->impl->frontend->check(moduleName, frontendOptions);
         for (const auto& error : checkResult.errors)

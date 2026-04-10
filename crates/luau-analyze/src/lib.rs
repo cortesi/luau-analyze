@@ -262,15 +262,29 @@ impl Default for CheckerOptions {
     }
 }
 
+/// One host-provided virtual module visible to a single check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualModule<'a> {
+    /// Module name used by `require(...)`, for example `"term"`.
+    pub name: &'a str,
+    /// Source code returned by the host for that module.
+    pub source: &'a str,
+}
+
 /// Per-call options for `Checker::check_with_options`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CheckOptions<'a> {
     /// Optional timeout override for this call.
     pub timeout: Option<Duration>,
     /// Optional module label override for this call.
+    ///
+    /// For source that uses relative `require(...)`, this must identify a real
+    /// filesystem module path so the checker can resolve adjacent files.
     pub module_name: Option<&'a str>,
     /// Optional cancellation token for this call.
     pub cancellation_token: Option<&'a CancellationToken>,
+    /// Optional host-provided virtual modules visible to this call.
+    pub virtual_modules: &'a [VirtualModule<'a>],
 }
 
 impl<'a> CheckOptions<'a> {
@@ -280,6 +294,7 @@ impl<'a> CheckOptions<'a> {
             timeout: self.timeout,
             module_name: self.module_name.or(Some(module_name)),
             cancellation_token: self.cancellation_token,
+            virtual_modules: self.virtual_modules,
         }
     }
 }
@@ -430,6 +445,9 @@ impl Checker {
     }
 
     /// Type-checks a Luau source file with explicit per-call options.
+    ///
+    /// Relative `require(...)` calls are resolved against the file path unless
+    /// `options.module_name` overrides it with a different module label.
     pub fn check_path_with_options(
         &mut self,
         path: &Path,
@@ -600,6 +618,8 @@ struct ResolvedCheckOptions<'a> {
     timeout: Option<Duration>,
     /// Raw cancellation token handle, or null when disabled.
     cancellation_token: ffi::TokenHandle,
+    /// Virtual modules prepared for the C ABI.
+    virtual_modules: ResolvedVirtualModules<'a>,
 }
 
 impl<'a> ResolvedCheckOptions<'a> {
@@ -616,6 +636,7 @@ impl<'a> ResolvedCheckOptions<'a> {
             cancellation_token: options
                 .cancellation_token
                 .map_or(ffi::TokenHandle::null(), CancellationToken::raw),
+            virtual_modules: ResolvedVirtualModules::new(options.virtual_modules)?,
         })
     }
 
@@ -627,7 +648,62 @@ impl<'a> ResolvedCheckOptions<'a> {
             has_timeout: u32::from(self.timeout.is_some()),
             timeout_seconds: self.timeout.map_or(0.0, |duration| duration.as_secs_f64()),
             cancellation_token: self.cancellation_token,
+            virtual_modules: self.virtual_modules.ptr(),
+            virtual_module_count: self.virtual_modules.len(),
         }
+    }
+}
+
+/// Virtual modules after converting borrowed strings to C ABI pointers.
+struct ResolvedVirtualModules<'a> {
+    /// Borrowed virtual-module names prepared for the C ABI.
+    _names: Vec<FfiStr<'a>>,
+    /// Borrowed virtual-module source strings prepared for the C ABI.
+    _sources: Vec<FfiStr<'a>>,
+    /// Raw ABI entries that borrow from `names` and `sources`.
+    entries: Vec<ffi::LuauVirtualModule>,
+}
+
+impl<'a> ResolvedVirtualModules<'a> {
+    /// Converts borrowed virtual modules into ABI-safe storage.
+    fn new(modules: &'a [VirtualModule<'a>]) -> Result<Self, Error> {
+        let names = modules
+            .iter()
+            .map(|module| FfiStr::new(module.name, "virtual module name"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let sources = modules
+            .iter()
+            .map(|module| FfiStr::new(module.source, "virtual module source"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let entries = names
+            .iter()
+            .zip(&sources)
+            .map(|(name, source)| ffi::LuauVirtualModule {
+                name: name.ptr(),
+                name_len: name.len(),
+                source: source.ptr(),
+                source_len: source.len(),
+            })
+            .collect();
+        Ok(Self {
+            _names: names,
+            _sources: sources,
+            entries,
+        })
+    }
+
+    /// Returns the ABI pointer to the first virtual module entry.
+    fn ptr(&self) -> *const ffi::LuauVirtualModule {
+        if self.entries.is_empty() {
+            ptr::null()
+        } else {
+            self.entries.as_ptr()
+        }
+    }
+
+    /// Returns the number of ABI entries.
+    fn len(&self) -> u32 {
+        u32::try_from(self.entries.len()).expect("virtual module count should fit in u32")
     }
 }
 
