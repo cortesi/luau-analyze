@@ -474,7 +474,7 @@ impl Checker {
         let raw = unsafe {
             (self.api.luau_checker_check)(self.inner, source.ptr(), source.len(), &raw_options)
         };
-        let raw = RawCheckResultGuard::new(self.api, raw);
+        let raw = RawGuard::new(self.api, raw);
 
         let mut diagnostics = collect_diagnostics(raw.as_ref());
 
@@ -495,7 +495,7 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error
 
     // SAFETY: Input pointer is valid for the call duration.
     let raw = unsafe { (api.luau_extract_entrypoint_schema)(source.ptr(), source.len()) };
-    let raw = RawEntrypointSchemaGuard::new(api, raw);
+    let raw = RawGuard::new(api, raw);
 
     if raw.as_ref().error_len != 0 {
         return Err(Error::EntrypointSchema(string_from_raw(
@@ -527,7 +527,7 @@ fn add_definitions_raw(
     let module_name = FfiStr::new(module_name, "definition module name")?;
 
     // SAFETY: Pointers are valid for call duration and checker handle is live.
-    let raw = RawStringGuard::new(api, unsafe {
+    let raw = RawGuard::new(api, unsafe {
         (api.luau_checker_add_definitions)(
             checker,
             defs.ptr(),
@@ -537,9 +537,14 @@ fn add_definitions_raw(
         )
     });
 
-    match raw.message() {
-        Some(message) => Err(Error::Definitions(message)),
-        None => Ok(()),
+    let string = raw.as_ref();
+    if string.len == 0 {
+        Ok(())
+    } else {
+        Err(Error::Definitions(string_from_raw(
+            string.data,
+            string.len,
+        )))
     }
 }
 
@@ -655,40 +660,35 @@ impl<'a> ResolvedCheckOptions<'a> {
 }
 
 /// Virtual modules after converting borrowed strings to C ABI pointers.
+///
+/// The raw pointers inside `entries` borrow from the original caller-owned
+/// strings, tracked by the `'a` lifetime parameter.
 struct ResolvedVirtualModules<'a> {
-    /// Borrowed virtual-module names prepared for the C ABI.
-    _names: Vec<FfiStr<'a>>,
-    /// Borrowed virtual-module source strings prepared for the C ABI.
-    _sources: Vec<FfiStr<'a>>,
-    /// Raw ABI entries that borrow from `names` and `sources`.
+    /// Raw ABI entries borrowing from the caller-owned module strings.
     entries: Vec<ffi::LuauVirtualModule>,
+    /// Ties the borrowed raw pointers to the input lifetime.
+    _marker: PhantomData<&'a ()>,
 }
 
 impl<'a> ResolvedVirtualModules<'a> {
     /// Converts borrowed virtual modules into ABI-safe storage.
     fn new(modules: &'a [VirtualModule<'a>]) -> Result<Self, Error> {
-        let names = modules
+        let entries = modules
             .iter()
-            .map(|module| FfiStr::new(module.name, "virtual module name"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let sources = modules
-            .iter()
-            .map(|module| FfiStr::new(module.source, "virtual module source"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let entries = names
-            .iter()
-            .zip(&sources)
-            .map(|(name, source)| ffi::LuauVirtualModule {
-                name: name.ptr(),
-                name_len: name.len(),
-                source: source.ptr(),
-                source_len: source.len(),
+            .map(|module| {
+                let name = FfiStr::new(module.name, "virtual module name")?;
+                let source = FfiStr::new(module.source, "virtual module source")?;
+                Ok(ffi::LuauVirtualModule {
+                    name: name.ptr(),
+                    name_len: name.len(),
+                    source: source.ptr(),
+                    source_len: source.len(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, Error>>()?;
         Ok(Self {
-            _names: names,
-            _sources: sources,
             entries,
+            _marker: PhantomData,
         })
     }
 
@@ -707,88 +707,62 @@ impl<'a> ResolvedVirtualModules<'a> {
     }
 }
 
-/// RAII guard that releases a raw check result on scope exit.
-struct RawCheckResultGuard {
-    /// Loaded native checker entrypoints.
-    api: &'static ffi::Api,
-    /// Raw check result allocated by the shim.
-    raw: ffi::LuauCheckResult,
+/// A shim-allocated FFI resource that is released through a fixed entrypoint.
+trait FfiResource: Copy {
+    /// Releases the resource through its native free function.
+    ///
+    /// # Safety
+    ///
+    /// The value must originate from the matching shim allocator and must not have
+    /// been released already.
+    unsafe fn release(self, api: &ffi::Api);
 }
 
-impl RawCheckResultGuard {
-    /// Creates a guard for a raw check result.
-    fn new(api: &'static ffi::Api, raw: ffi::LuauCheckResult) -> Self {
+impl FfiResource for ffi::LuauCheckResult {
+    unsafe fn release(self, api: &ffi::Api) {
+        // SAFETY: Caller guarantees this value came from `luau_checker_check`.
+        unsafe { (api.luau_check_result_free)(self) };
+    }
+}
+
+impl FfiResource for ffi::LuauString {
+    unsafe fn release(self, api: &ffi::Api) {
+        // SAFETY: Caller guarantees this value came from a shim entrypoint that returns `LuauString`.
+        unsafe { (api.luau_string_free)(self) };
+    }
+}
+
+impl FfiResource for ffi::LuauEntrypointSchemaResult {
+    unsafe fn release(self, api: &ffi::Api) {
+        // SAFETY: Caller guarantees this value came from `luau_extract_entrypoint_schema`.
+        unsafe { (api.luau_entrypoint_schema_result_free)(self) };
+    }
+}
+
+/// RAII guard that releases a shim-allocated FFI resource on scope exit.
+struct RawGuard<T: FfiResource> {
+    /// Loaded native checker entrypoints.
+    api: &'static ffi::Api,
+    /// Raw resource allocated by the shim.
+    raw: T,
+}
+
+impl<T: FfiResource> RawGuard<T> {
+    /// Creates a guard for a shim-allocated resource.
+    fn new(api: &'static ffi::Api, raw: T) -> Self {
         Self { api, raw }
     }
 
-    /// Returns a shared reference to the raw check result.
-    fn as_ref(&self) -> &ffi::LuauCheckResult {
+    /// Returns a shared reference to the underlying resource.
+    fn as_ref(&self) -> &T {
         &self.raw
     }
 }
 
-impl Drop for RawCheckResultGuard {
+impl<T: FfiResource> Drop for RawGuard<T> {
     fn drop(&mut self) {
-        // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { (self.api.luau_check_result_free)(self.raw) };
-    }
-}
-
-/// RAII guard that releases a raw string result on scope exit.
-struct RawStringGuard {
-    /// Loaded native checker entrypoints.
-    api: &'static ffi::Api,
-    /// Raw string result allocated by the shim.
-    raw: ffi::LuauString,
-}
-
-impl RawStringGuard {
-    /// Creates a guard for a raw string result.
-    fn new(api: &'static ffi::Api, raw: ffi::LuauString) -> Self {
-        Self { api, raw }
-    }
-
-    /// Reads the string payload when the shim returned one.
-    fn message(&self) -> Option<String> {
-        if self.raw.len == 0 {
-            None
-        } else {
-            Some(string_from_raw(self.raw.data, self.raw.len))
-        }
-    }
-}
-
-impl Drop for RawStringGuard {
-    fn drop(&mut self) {
-        // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { (self.api.luau_string_free)(self.raw) };
-    }
-}
-
-/// RAII guard that releases a raw entrypoint schema result on scope exit.
-struct RawEntrypointSchemaGuard {
-    /// Loaded native checker entrypoints.
-    api: &'static ffi::Api,
-    /// Raw entrypoint schema result allocated by the shim.
-    raw: ffi::LuauEntrypointSchemaResult,
-}
-
-impl RawEntrypointSchemaGuard {
-    /// Creates a guard for a raw entrypoint schema result.
-    fn new(api: &'static ffi::Api, raw: ffi::LuauEntrypointSchemaResult) -> Self {
-        Self { api, raw }
-    }
-
-    /// Returns a shared reference to the raw result.
-    fn as_ref(&self) -> &ffi::LuauEntrypointSchemaResult {
-        &self.raw
-    }
-}
-
-impl Drop for RawEntrypointSchemaGuard {
-    fn drop(&mut self) {
-        // SAFETY: `raw` came from shim and must be released exactly once.
-        unsafe { (self.api.luau_entrypoint_schema_result_free)(self.raw) };
+        // SAFETY: `raw` originated from the shim and must be released exactly once.
+        unsafe { self.raw.release(self.api) };
     }
 }
 
