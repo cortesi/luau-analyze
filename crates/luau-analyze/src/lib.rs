@@ -291,10 +291,8 @@ impl<'a> CheckOptions<'a> {
     /// Supplies a module name only when the caller did not provide one already.
     fn with_fallback_module_name(self, module_name: &'a str) -> Self {
         Self {
-            timeout: self.timeout,
             module_name: self.module_name.or(Some(module_name)),
-            cancellation_token: self.cancellation_token,
-            virtual_modules: self.virtual_modules,
+            ..self
         }
     }
 }
@@ -475,14 +473,14 @@ impl Checker {
             (self.api.luau_checker_check)(self.inner, source.ptr(), source.len(), &raw_options)
         };
         let raw = RawGuard::new(self.api, raw);
+        let raw = raw.as_ref();
 
-        let mut diagnostics = collect_diagnostics(raw.as_ref());
-
+        let mut diagnostics = collect_diagnostics(raw);
         diagnostics.sort_by(diagnostic_sort_key);
         Ok(CheckResult {
             diagnostics,
-            timed_out: raw.as_ref().timed_out != 0,
-            cancelled: raw.as_ref().cancelled != 0,
+            timed_out: raw.timed_out != 0,
+            cancelled: raw.cancelled != 0,
         })
     }
 }
@@ -548,11 +546,6 @@ fn add_definitions_raw(
     }
 }
 
-/// Formats a path for diagnostics and module labels.
-fn path_label(path: &Path) -> String {
-    path.display().to_string()
-}
-
 /// UTF-8 checker input loaded from disk together with its display label.
 struct LoadedInput {
     /// Display label used for diagnostics and module names.
@@ -564,7 +557,7 @@ struct LoadedInput {
 impl LoadedInput {
     /// Reads one UTF-8 file used as checker input.
     fn read(path: &Path, kind: &'static str) -> Result<Self, Error> {
-        let label = path_label(path);
+        let label = path.display().to_string();
         let contents = fs::read_to_string(path).map_err(|error| Error::ReadFile {
             kind,
             path: label.clone(),
