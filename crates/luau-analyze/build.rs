@@ -1,8 +1,9 @@
 //! Build script for `luau-analyze`.
 //!
-//! Compiles the vendored Luau sources and local shim into a private shared library
-//! that the Rust crate loads at runtime. Keeping the analyzer in its own dynamic
-//! library isolates Luau symbols from other embedders such as `mlua`.
+//! Compiles the vendored Luau sources and local shim into a private shared
+//! library that the Rust crate loads at runtime. Keeping the analyzer in its
+//! own dynamic library isolates Luau symbols from other embedders such as
+//! `mlua`.
 
 use std::{
     env, fs,

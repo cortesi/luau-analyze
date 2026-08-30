@@ -9,6 +9,12 @@ version = "0.0.1"
 rust-version = "1.85.0"
 repository = "https://github.com/cortesi/luau-analyze"
 
+[workspace.metadata.nanocode]
+schema-version = 1
+requires-nanocode = ">=0.1, <0.2"
+features = "default"
+smoke-hooks = [["cargo", "xtask", "smoke"]]
+
 [workspace.lints.rust]
 missing_docs = "warn"
 
@@ -34,3 +40,9 @@ tests_outside_test_module = "warn"
 too_many_lines = "warn"
 use_self = "warn"
 wildcard_dependencies = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

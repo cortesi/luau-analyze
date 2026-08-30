@@ -39,7 +39,8 @@ mod tests {
         serde_json::from_str(&text).expect("stdout should be valid JSON")
     }
 
-    /// Verifies JSON output includes strict policy fields for a successful check.
+    /// Verifies JSON output includes strict policy fields for a successful
+    /// check.
     #[test]
     fn check_json_reports_policy_for_success() {
         let output = run_lan(&[
@@ -101,7 +102,8 @@ mod tests {
         assert_eq!(value["cancelled"], true);
     }
 
-    /// Verifies definition-load failures include the specific failing file path.
+    /// Verifies definition-load failures include the specific failing file
+    /// path.
     #[test]
     fn check_definition_errors_include_failing_path() {
         let unique = SystemTime::now()

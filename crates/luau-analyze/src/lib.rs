@@ -299,8 +299,9 @@ impl<'a> CheckOptions<'a> {
 
 /// A reusable cancellation token that can be signaled from another thread.
 ///
-/// `CancellationToken` is `Send` and `Sync` because the underlying Luau implementation
-/// uses atomic operations to manage its signaled state safely across thread boundaries.
+/// `CancellationToken` is `Send` and `Sync` because the underlying Luau
+/// implementation uses atomic operations to manage its signaled state safely
+/// across thread boundaries.
 #[derive(Clone, Debug)]
 pub struct CancellationToken {
     /// Shared token internals.
@@ -316,14 +317,17 @@ struct CancellationTokenInner {
     raw: ffi::TokenHandle,
 }
 
-// The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
+// The underlying C cancellation token uses atomic state and is thread-safe for
+// signal/reset.
 unsafe impl Send for CancellationTokenInner {}
-// The underlying C cancellation token uses atomic state and is thread-safe for signal/reset.
+// The underlying C cancellation token uses atomic state and is thread-safe for
+// signal/reset.
 unsafe impl Sync for CancellationTokenInner {}
 
 impl Drop for CancellationTokenInner {
     fn drop(&mut self) {
-        // SAFETY: `raw` originates from `luau_cancellation_token_new` and is valid until drop.
+        // SAFETY: `raw` originates from `luau_cancellation_token_new` and is valid
+        // until drop.
         unsafe { (self.api.luau_cancellation_token_free)(self.raw) };
     }
 }
@@ -375,7 +379,8 @@ pub struct Checker {
     options: CheckerOptions,
 }
 
-// The underlying checker is single-threaded (`&mut self` methods), but ownership can move.
+// The underlying checker is single-threaded (`&mut self` methods), but
+// ownership can move.
 unsafe impl Send for Checker {}
 
 impl Checker {
@@ -414,7 +419,8 @@ impl Checker {
         )
     }
 
-    /// Loads Luau definitions from a UTF-8 text file using the path as module label.
+    /// Loads Luau definitions from a UTF-8 text file using the path as module
+    /// label.
     pub fn add_definitions_path(&mut self, path: &Path) -> Result<(), Error> {
         let defs = LoadedInput::read(path, "definitions")?;
         prefix_definitions_error(
@@ -437,7 +443,8 @@ impl Checker {
         self.check_with_options(source, CheckOptions::default())
     }
 
-    /// Type-checks a Luau source file with default options and the path as module label.
+    /// Type-checks a Luau source file with default options and the path as
+    /// module label.
     pub fn check_path(&mut self, path: &Path) -> Result<CheckResult, Error> {
         self.check_path_with_options(path, CheckOptions::default())
     }
@@ -509,12 +516,14 @@ pub fn extract_entrypoint_schema(source: &str) -> Result<EntrypointSchema, Error
 
 impl Drop for Checker {
     fn drop(&mut self) {
-        // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until drop.
+        // SAFETY: `self.inner` originates from `luau_checker_new` and is valid until
+        // drop.
         unsafe { (self.api.luau_checker_free)(self.inner) };
     }
 }
 
-/// Loads Luau definition source through the native checker with a chosen module label.
+/// Loads Luau definition source through the native checker with a chosen module
+/// label.
 fn add_definitions_raw(
     api: &'static ffi::Api,
     checker: ffi::CheckerHandle,
@@ -539,10 +548,7 @@ fn add_definitions_raw(
     if string.len == 0 {
         Ok(())
     } else {
-        Err(Error::Definitions(string_from_raw(
-            string.data,
-            string.len,
-        )))
+        Err(Error::Definitions(string_from_raw(string.data, string.len)))
     }
 }
 
@@ -706,8 +712,8 @@ trait FfiResource: Copy {
     ///
     /// # Safety
     ///
-    /// The value must originate from the matching shim allocator and must not have
-    /// been released already.
+    /// The value must originate from the matching shim allocator and must not
+    /// have been released already.
     unsafe fn release(self, api: &ffi::Api);
 }
 
@@ -720,14 +726,16 @@ impl FfiResource for ffi::LuauCheckResult {
 
 impl FfiResource for ffi::LuauString {
     unsafe fn release(self, api: &ffi::Api) {
-        // SAFETY: Caller guarantees this value came from a shim entrypoint that returns `LuauString`.
+        // SAFETY: Caller guarantees this value came from a shim entrypoint that returns
+        // `LuauString`.
         unsafe { (api.luau_string_free)(self) };
     }
 }
 
 impl FfiResource for ffi::LuauEntrypointSchemaResult {
     unsafe fn release(self, api: &ffi::Api) {
-        // SAFETY: Caller guarantees this value came from `luau_extract_entrypoint_schema`.
+        // SAFETY: Caller guarantees this value came from
+        // `luau_extract_entrypoint_schema`.
         unsafe { (api.luau_entrypoint_schema_result_free)(self) };
     }
 }
@@ -785,7 +793,8 @@ fn string_from_raw(ptr: *const u8, len: u32) -> String {
 
 /// Converts diagnostic rows owned by the shim into Rust values.
 fn collect_diagnostics(raw: &ffi::LuauCheckResult) -> Vec<Diagnostic> {
-    // SAFETY: `raw.diagnostics` points to `diagnostic_count` entries owned by `raw`.
+    // SAFETY: `raw.diagnostics` points to `diagnostic_count` entries owned by
+    // `raw`.
     unsafe { raw_slice(raw.diagnostics, raw.diagnostic_count) }
         .iter()
         .map(|diagnostic| Diagnostic {
@@ -975,7 +984,8 @@ return main
         }
     }
 
-    /// Verifies path-based definitions loading reads UTF-8 files and preserves labels.
+    /// Verifies path-based definitions loading reads UTF-8 files and preserves
+    /// labels.
     #[test]
     fn add_definitions_path_loads_file_contents() {
         let mut checker = Checker::new().expect("checker creation should succeed");

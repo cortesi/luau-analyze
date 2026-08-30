@@ -42,6 +42,9 @@ include = [
     "/luau/CLI/src/VfsNavigator.cpp",
 ]
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 

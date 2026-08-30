@@ -30,10 +30,6 @@ struct CliArgs {
 /// Supported xtask subcommands.
 #[derive(Debug, Subcommand)]
 enum XtaskCommand {
-    /// Format and lint the workspace.
-    Tidy,
-    /// Run the workspace test suite.
-    Test,
     /// Run example Luau smoke checks.
     Smoke(SmokeArgs),
     /// Update the Luau submodule to the latest upstream tag.
@@ -101,8 +97,6 @@ impl Colors {
 fn main() -> ExitCode {
     let args = CliArgs::parse();
     let result = match args.command {
-        XtaskCommand::Tidy => tidy(),
-        XtaskCommand::Test => test(),
         XtaskCommand::Smoke(smoke) => smoke_check(&smoke),
         XtaskCommand::LuauUpdate => luau_update(),
     };
@@ -114,35 +108,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// Formats and lints the workspace.
-fn tidy() -> Result<(), String> {
-    run_cargo(&[
-        "+nightly",
-        "fmt",
-        "--all",
-        "--",
-        "--config-path",
-        "./rustfmt-nightly.toml",
-    ])?;
-    run_cargo(&[
-        "clippy",
-        "-q",
-        "--fix",
-        "--all",
-        "--all-targets",
-        "--all-features",
-        "--allow-dirty",
-        "--tests",
-        "--examples",
-    ])?;
-    Ok(())
-}
-
-/// Runs the workspace tests through `cargo-nextest`.
-fn test() -> Result<(), String> {
-    run_cargo(&["nextest", "run", "--all"])
 }
 
 /// Updates the Luau submodule to the latest upstream tag.

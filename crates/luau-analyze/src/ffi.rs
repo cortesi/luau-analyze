@@ -243,7 +243,8 @@ impl Api {
     }
 }
 
-/// Returns the runtime path for the materialized private native checker library.
+/// Returns the runtime path for the materialized private native checker
+/// library.
 fn materialized_library_path() -> Result<&'static PathBuf, String> {
     MATERIALIZED_LIBRARY_PATH
         .get_or_init(materialize_native_library)
@@ -251,7 +252,8 @@ fn materialized_library_path() -> Result<&'static PathBuf, String> {
         .map_err(Clone::clone)
 }
 
-/// Materializes the embedded native checker library into a stable temp-file location.
+/// Materializes the embedded native checker library into a stable temp-file
+/// location.
 fn materialize_native_library() -> Result<PathBuf, String> {
     let content_hash = fnv1a64(NATIVE_LIBRARY_BYTES);
     let target_dir = env::temp_dir()

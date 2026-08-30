@@ -185,7 +185,8 @@ mod tests {
         assert!(third.is_ok(), "third check should still succeed");
     }
 
-    /// Verifies the checker remains stable when another Luau embedding is linked into the binary.
+    /// Verifies the checker remains stable when another Luau embedding is
+    /// linked into the binary.
     #[test]
     fn checker_coexists_with_mlua() {
         let _lua = Lua::new();
@@ -204,7 +205,8 @@ mod tests {
         assert!(result.is_ok(), "expected script to pass: {result:#?}");
     }
 
-    /// Verifies the checker does not depend on the build-directory native library still existing.
+    /// Verifies the checker does not depend on the build-directory native
+    /// library still existing.
     #[test]
     fn checker_works_without_build_directory_native_library() {
         let build_library_path = PathBuf::from(env!("LUAU_ANALYZE_NATIVE_LIB_PATH"));
@@ -245,7 +247,8 @@ mod tests {
         assert!(result.is_ok(), "empty script should not produce errors");
     }
 
-    /// Restores the build-directory native checker library after one test hides it.
+    /// Restores the build-directory native checker library after one test hides
+    /// it.
     struct NativeLibraryRestore {
         /// Original build-output library path.
         original: PathBuf,
@@ -336,7 +339,8 @@ mod tests {
         );
     }
 
-    /// Verifies bare source checks still need a filesystem root for relative requires.
+    /// Verifies bare source checks still need a filesystem root for relative
+    /// requires.
     #[test]
     fn plain_source_check_without_filesystem_context_cannot_resolve_relative_require() {
         let mut checker = Checker::new().expect("checker creation should succeed");
