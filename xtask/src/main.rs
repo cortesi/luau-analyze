@@ -1,5 +1,7 @@
 //! Project-local task runner.
 
+mod cargo_env;
+
 use std::{
     env, fs,
     io::{IsTerminal, stdout},
@@ -372,7 +374,7 @@ fn latest_luau_tag(tag_output: &str) -> Result<String, String> {
 /// Executes `cargo` in the workspace root.
 fn run_cargo(args: &[&str]) -> Result<(), String> {
     let workspace_root = workspace_root();
-    let status = Command::new("cargo")
+    let status = cargo_env::command("cargo")
         .args(args)
         .current_dir(&workspace_root)
         .status()
